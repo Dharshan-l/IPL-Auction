@@ -1,0 +1,14 @@
+services:
+  ipl-auction:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ipl-auction-container
+    ports:
+      - "3000:3000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - PORT=3000
+    volumes:
+      - ./auction_state.json:/app/auction_state.json
+    restart: unless-stopped

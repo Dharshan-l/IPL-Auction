@@ -1,0 +1,6 @@
+{
+  "name": "IPL Auction",
+  "description": "Real-time multiplayer IPL Auction web application with 1 Auctioneer and 10 Team Owners.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,11 @@
+node_modules
+dist
+auction_state.json
+.env
+.env.local
+.git
+.github
+.gemini
+README.md
+Dockerfile
+docker-compose.yml
