@@ -178,14 +178,16 @@ function loadState() {
           }
         }
 
-        // Auto-migrate and synchronize players with any corrected fields (like cricbuzzId or profileImage) from playersData
+        // Auto-migrate and synchronize players with any corrected fields (like cricbuzzId, profileImage, country, or countryType) from playersData
         state.players = state.players.map(p => {
           const fresh = playersData.find(fd => fd.id === p.id);
           if (fresh) {
             return {
               ...p,
               profileImage: fresh.profileImage,
-              cricbuzzId: fresh.cricbuzzId
+              cricbuzzId: fresh.cricbuzzId,
+              country: fresh.country,
+              countryType: fresh.countryType
             };
           }
           return p;
@@ -950,13 +952,6 @@ app.post('/api/auction/admin/action', async (req, res) => {
     const finalPurseLakhs = finalBudgetCrores * 100;
 
     let pool = [...playersData];
-    if (finalPlayerPoolSize === '15') {
-      pool = pool.slice(0, 15);
-    } else if (finalPlayerPoolSize === '20') {
-      pool = pool.slice(0, 20);
-    } else if (finalPlayerPoolSize === '25') {
-      pool = pool.slice(0, 25);
-    }
 
     state.auction = {
       status: 'idle',
@@ -1048,13 +1043,6 @@ app.post('/api/auction/admin/action', async (req, res) => {
     const currentTotalPurseLakhs = state.auction.totalPurseLakhs || 15000;
 
     let pool = [...playersData];
-    if (currentPlayerPoolSize === '15') {
-      pool = pool.slice(0, 15);
-    } else if (currentPlayerPoolSize === '20') {
-      pool = pool.slice(0, 20);
-    } else if (currentPlayerPoolSize === '25') {
-      pool = pool.slice(0, 25);
-    }
 
     state.auction = {
       status: 'idle',

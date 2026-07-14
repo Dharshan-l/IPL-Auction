@@ -10,5 +10,5 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - PORT=3000
     volumes:
-      - ./auction_state.json:/app/auction_state.json
+      - ./data:/app/data
     restart: unless-stopped

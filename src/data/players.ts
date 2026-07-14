@@ -569,6 +569,53 @@ const fullCsv = [CSV_PART1, CSV_PART2, CSV_PART3, CSV_PART4, CSV_PART5].join('\n
 const lines = fullCsv.split('\n');
 const seenNames = new Set<string>();
 
+const OVERSEAS_MAP: Record<string, string> = {
+  'adam milne': 'New Zealand',
+  'akeal hosein': 'West Indies',
+  'allah ghazanfar': 'Afghanistan',
+  'ben duckett': 'England',
+  'ben dwarshuis': 'Australia',
+  'brydon carse': 'England',
+  'cooper connolly': 'Australia',
+  'corbin bosch': 'South Africa',
+  'dewald brevis': 'South Africa',
+  'donovan ferreira': 'South Africa',
+  'dushmantha chameera': 'Sri Lanka',
+  'eshan malinga': 'Sri Lanka',
+  'finn allen': 'New Zealand',
+  'glenn phillips': 'New Zealand',
+  'jack edwards': 'Australia',
+  'jacob bethell': 'England',
+  'jamie overton': 'England',
+  'jason holder': 'West Indies',
+  'jordan cox': 'England',
+  'josh inglis': 'Australia',
+  'kamindu mendis': 'Sri Lanka',
+  'kwena maphaka': 'South Africa',
+  'kyle jamieson': 'New Zealand',
+  'lhuan-dre pretorius': 'South Africa',
+  'lockie ferguson': 'New Zealand',
+  'luke wood': 'England',
+  'lungi ngidi': 'South Africa',
+  'matt henry': 'New Zealand',
+  'matthew breetzke': 'South Africa',
+  'matthew short': 'Australia',
+  'mitch owen': 'Australia',
+  'mitchell santner': 'New Zealand',
+  'nandre burger': 'South Africa',
+  'nathan ellis': 'Australia',
+  'nuwan thushara': 'Sri Lanka',
+  'pathum nissanka': 'Sri Lanka',
+  'romario shepherd': 'West Indies',
+  'rovman powell': 'West Indies',
+  'ryan rickelton': 'South Africa',
+  'sherfane rutherford': 'West Indies',
+  'tim seifert': 'New Zealand',
+  'tom banton': 'England',
+  'xavier bartlett': 'Australia',
+  'zak foulkes': 'New Zealand'
+};
+
 lines.forEach((line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -588,6 +635,12 @@ lines.forEach((line) => {
   const team = cols[1].trim() || 'None';
   const rawRole = cols[2].trim();
   let country = cols[3].trim();
+  
+  const lookupKey = name.toLowerCase().trim();
+  if (OVERSEAS_MAP[lookupKey]) {
+    country = OVERSEAS_MAP[lookupKey];
+  }
+  
   if (!country) country = 'India';
 
   const basePrice = cols[4].trim();

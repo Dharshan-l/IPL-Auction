@@ -675,17 +675,25 @@ export default function App() {
   const renderHomeScreen = () => {
     const hasActiveRoom = !!auctionState.roomCode;
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-md w-full space-y-8 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
+        
+        {/* Premium Background Glow Orbs */}
+        <div className="ambient-glow">
+          <div className="glow-orb-1" />
+          <div className="glow-orb-2" />
+        </div>
+
+        <div className="max-w-md w-full space-y-8 bg-slate-900/45 backdrop-blur-2xl p-8 rounded-3xl border border-slate-800/60 shadow-[0_0_60px_rgba(0,0,0,0.65)] relative overflow-hidden z-10">
+          {/* Header Accent Line */}
+          <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
           
           <div className="text-center space-y-4">
-            <div className="inline-flex items-center justify-center space-x-2 bg-gradient-to-r from-amber-500 to-yellow-400 p-3 rounded-2xl shadow-lg">
-              <Trophy className="w-8 h-8 text-slate-950 animate-pulse" />
-              <span className="font-display font-black text-xl tracking-wider text-slate-950 uppercase">IPL Live Auction</span>
+            <div className="inline-flex items-center justify-center space-x-2.5 bg-gradient-to-r from-amber-500/10 to-yellow-400/10 border border-yellow-500/25 p-3 px-5 rounded-2xl shadow-lg shadow-yellow-500/5 hover:scale-102 transition-transform cursor-default">
+              <Trophy className="w-6 h-6 text-yellow-400 animate-pulse" />
+              <span className="font-display font-black text-sm tracking-widest text-yellow-400 uppercase">IPL Live Auction</span>
             </div>
-            <h2 className="text-2xl font-extrabold tracking-tight text-white uppercase font-display">
-              Multiplayer Auction Platform
+            <h2 className="text-2xl font-black tracking-tight text-white uppercase font-display leading-tight">
+              Multiplayer Arena
             </h2>
             <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed font-medium">
               Experience the authentic thrill of the IPL auction. Connect with friends to own franchises, bid for players, and analyze squads in real-time.
@@ -698,15 +706,16 @@ export default function App() {
                 {apiError}
               </div>
             )}
+            
             <button
               onClick={() => {
                 setApiError(null);
                 navigateTo('create_room');
               }}
-              className="w-full flex items-center justify-between p-4 rounded-2xl border bg-slate-950 border-slate-850 text-slate-200 hover:border-amber-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
+              className="w-full flex items-center justify-between p-4.5 rounded-2xl border bg-slate-950/80 border-slate-850 hover:border-amber-500/60 hover:shadow-[0_0_20px_rgba(245,158,11,0.1)] hover:bg-slate-900/40 text-slate-200 hover:text-white transition-all hover:scale-101 cursor-pointer shadow-md group"
             >
-              <div className="flex items-center space-x-3">
-                <div className="p-2 rounded-xl bg-amber-500/10 text-yellow-400 border border-yellow-500/25 group-hover:bg-amber-500/25 transition-colors">
+              <div className="flex items-center space-x-3.5">
+                <div className="p-2.5 rounded-xl bg-amber-500/10 text-yellow-400 border border-yellow-500/20 group-hover:bg-amber-500/20 transition-colors">
                   <Landmark className="w-5 h-5" />
                 </div>
                 <div className="text-left">
@@ -714,7 +723,7 @@ export default function App() {
                   <p className="text-[10px] text-slate-500 font-semibold">Host a new public or private room</p>
                 </div>
               </div>
-              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-500 transition-colors" />
+              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-500 group-hover:translate-x-0.5 transition-all" />
             </button>
  
             <button
@@ -722,10 +731,10 @@ export default function App() {
                 setApiError(null);
                 navigateTo('join_room');
               }}
-              className="w-full flex items-center justify-between p-4 rounded-2xl border bg-slate-950 border-slate-850 text-slate-200 hover:border-amber-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
+              className="w-full flex items-center justify-between p-4.5 rounded-2xl border bg-slate-950/80 border-slate-850 hover:border-indigo-500/60 hover:shadow-[0_0_20px_rgba(99,102,241,0.1)] hover:bg-slate-900/40 text-slate-200 hover:text-white transition-all hover:scale-101 cursor-pointer shadow-md group"
             >
-              <div className="flex items-center space-x-3">
-                <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-450 border border-indigo-500/25 group-hover:bg-indigo-500/25 transition-colors">
+              <div className="flex items-center space-x-3.5">
+                <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 group-hover:bg-indigo-500/20 transition-colors">
                   <Users className="w-5 h-5" />
                 </div>
                 <div className="text-left">
@@ -733,7 +742,7 @@ export default function App() {
                   <p className="text-[10px] text-slate-500 font-semibold">Enter with a room code or link</p>
                 </div>
               </div>
-              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-500 transition-colors" />
+              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 transition-all" />
             </button>
 
             {hasActiveRoom && !auctionState.isPrivate && (
@@ -743,10 +752,10 @@ export default function App() {
                   const randomName = 'Spectator_' + Math.random().toString(36).substring(2, 6).toUpperCase();
                   await handleJoin('spectator', randomName, auctionState.roomCode || '');
                 }}
-                className="w-full flex items-center justify-between p-4 rounded-2xl border bg-indigo-950/20 border-indigo-900/50 text-slate-200 hover:border-indigo-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
+                className="w-full flex items-center justify-between p-4.5 rounded-2xl border bg-indigo-950/20 border-indigo-900/50 hover:border-indigo-400/60 hover:shadow-[0_0_20px_rgba(129,140,248,0.1)] hover:bg-indigo-950/30 text-slate-200 hover:text-white transition-all hover:scale-101 cursor-pointer shadow-md group"
               >
-                <div className="flex items-center space-x-3">
-                  <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-550/25">
+                <div className="flex items-center space-x-3.5">
+                  <div className="p-2.5 rounded-xl bg-indigo-500/25 text-indigo-400 border border-indigo-550/20">
                     <Activity className="w-5 h-5 animate-pulse" />
                   </div>
                   <div className="text-left">
@@ -754,7 +763,7 @@ export default function App() {
                     <p className="text-[10px] text-indigo-450 font-semibold">Watch active room live: {auctionState.roomName}</p>
                   </div>
                 </div>
-                <ChevronRight className="w-5 h-5 text-indigo-400 group-hover:text-indigo-300 transition-colors" />
+                <ChevronRight className="w-5 h-5 text-indigo-400 group-hover:text-indigo-300 group-hover:translate-x-0.5 transition-all" />
               </button>
             )}
           </div>
@@ -782,25 +791,32 @@ export default function App() {
 
     if (generatedRoomCode) {
       return (
-        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative">
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
           
+          {/* Premium Background Glow Orbs */}
+          <div className="ambient-glow">
+            <div className="glow-orb-1" />
+            <div className="glow-orb-2" />
+          </div>
+
           {/* Back Button */}
-          <div className="absolute top-6 left-6">
+          <div className="absolute top-6 left-6 z-20">
             <button 
               type="button"
               onClick={() => {
                 setGeneratedRoomCode('');
                 setGeneratedPasscode('');
               }}
-              className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
+              className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900/80 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
             >
               <ChevronLeft className="w-4 h-4" />
               <span>Back</span>
             </button>
           </div>
 
-          <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+          <div className="max-w-md w-full space-y-6 bg-slate-900/45 backdrop-blur-2xl p-8 rounded-3xl border border-slate-800/60 shadow-[0_0_60px_rgba(0,0,0,0.65)] relative overflow-hidden z-10">
+            {/* Header Accent Line */}
+            <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
             
             <div className="text-center space-y-2">
               <div className="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/25 flex items-center justify-center mx-auto mb-2">
@@ -868,22 +884,29 @@ export default function App() {
     }
 
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative">
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
         
+        {/* Premium Background Glow Orbs */}
+        <div className="ambient-glow">
+          <div className="glow-orb-1" />
+          <div className="glow-orb-2" />
+        </div>
+
         {/* Back Button */}
-        <div className="absolute top-6 left-6">
+        <div className="absolute top-6 left-6 z-20">
           <button 
             type="button"
             onClick={() => navigateTo('home')}
-            className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
+            className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900/80 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
           >
             <ChevronLeft className="w-4 h-4" />
             <span>Back</span>
           </button>
         </div>
 
-        <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+        <div className="max-w-md w-full space-y-6 bg-slate-900/45 backdrop-blur-2xl p-8 rounded-3xl border border-slate-800/60 shadow-[0_0_60px_rgba(0,0,0,0.65)] relative overflow-hidden z-10">
+          {/* Header Accent Line */}
+          <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
           
           <div className="text-center space-y-1">
             <h2 className="text-2xl font-black tracking-tight text-white uppercase font-display">Configure Room</h2>
@@ -1105,22 +1128,29 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative">
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
         
+        {/* Premium Background Glow Orbs */}
+        <div className="ambient-glow">
+          <div className="glow-orb-1" />
+          <div className="glow-orb-2" />
+        </div>
+
         {/* Back Button */}
-        <div className="absolute top-6 left-6">
+        <div className="absolute top-6 left-6 z-20">
           <button 
             type="button"
             onClick={() => navigateTo('home')}
-            className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
+            className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900/80 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
           >
             <ChevronLeft className="w-4 h-4" />
             <span>Back</span>
           </button>
         </div>
 
-        <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+        <div className="max-w-md w-full space-y-6 bg-slate-900/45 backdrop-blur-2xl p-8 rounded-3xl border border-slate-800/60 shadow-[0_0_60px_rgba(0,0,0,0.65)] relative overflow-hidden z-10">
+          {/* Header Accent Line */}
+          <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
           
           <div className="text-center space-y-1">
             <h2 className="text-2xl font-black tracking-tight text-white uppercase font-display">Join Auction</h2>

@@ -8,12 +8,12 @@ interface PlayerImageProps {
 
 export default function PlayerImage({ player, className = "w-12 h-12 rounded-xl object-cover border border-slate-850" }: PlayerImageProps) {
   const [imgSrc, setImgSrc] = useState<string>(() => {
-    return `/api/player-photo/${player.id}`;
+    return `/api/player-photo/${player.id}?v=3`;
   });
 
   // Synchronize when player changes
   useEffect(() => {
-    setImgSrc(`/api/player-photo/${player.id}`);
+    setImgSrc(`/api/player-photo/${player.id}?v=3`);
   }, [player.id]);
 
   const handleError = () => {
