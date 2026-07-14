@@ -69,6 +69,15 @@ export interface AuctionLog {
   timestamp: string;
 }
 
+export interface ActiveUser {
+  userId: string;
+  username: string;
+  role: string; // 'auctioneer' | 'franchise_owner' | 'spectator'
+  franchise: string | null; // e.g. 'CSK', 'RCB' or null if none
+  isReady: boolean;
+  lastSeen: string;
+}
+
 export interface ActiveAuctionState {
   status: 'idle' | 'active' | 'paused' | 'completed';
   activePlayerId: string | null;
@@ -79,11 +88,20 @@ export interface ActiveAuctionState {
   logs: AuctionLog[];
   soldPlayers: Record<string, { franchise: string; priceLakhs: number }>; // playerId -> sold details
   unsoldPlayerIds: string[];
-  activeUsers: Record<string, { role: string; lastSeen: string }>; // session ID -> role
+  activeUsers: Record<string, ActiveUser>; // session ID -> active user details
   roomCategory?: 'category1' | 'category2' | 'category3';
   maxSquadSize?: number;
   totalPurseLakhs?: number;
   isPrivate?: boolean;
   passcode?: string;
   isEnded?: boolean;
+  
+  // Custom room configuration settings
+  roomName?: string;
+  roomCode?: string;
+  playerPoolSize?: string;
+  numTeams?: number;
+  auctionMode?: string;
+  lobbyStatus?: 'waiting' | 'active';
 }
+

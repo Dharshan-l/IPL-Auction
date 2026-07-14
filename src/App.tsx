@@ -3,20 +3,27 @@ import {
   Trophy, Shield, Users, Award, TrendingUp, DollarSign, HelpCircle, 
   Activity, Landmark, ShieldCheck, Play, Pause, ChevronRight, Gavel, 
   Sparkles, RefreshCw, LogOut, Check, ArrowRight, UserCheck, AlertTriangle, 
-  Wifi, WifiOff, Search, Plus, X
+  Wifi, WifiOff, Search, Plus, X, Copy, Link, Lock, Unlock
 } from 'lucide-react';
 import { Player, ActiveAuctionState, Franchise, PlayerRole, PlayerCountryType } from './types';
-import RoleSelection from './components/RoleSelection';
 import PlayerSearch from './components/PlayerSearch';
 import Analytics from './components/Analytics';
 import FranchiseSquads from './components/FranchiseSquads';
 import PlayerImage from './components/PlayerImage';
 
 export default function App() {
-  // Session details
-  const [userId, setUserId] = useState<string | null>(() => localStorage.getItem('ipl_userId'));
-  const [userRole, setUserRole] = useState<string | null>(() => localStorage.getItem('ipl_userRole'));
+  // Session details - We do NOT auto-restore userRole or userId to avoid auto-entering the room on refresh.
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(() => localStorage.getItem('ipl_username'));
+
+  // Client-side SPA routing state
+  const [currentScreen, setCurrentScreen] = useState<'home' | 'create_room' | 'join_room' | 'lobby' | 'auction'>('home');
+  const [preFilledRoomCode, setPreFilledRoomCode] = useState('');
+
+  // Copy indicator animations
+  const [roomCodeCopied, setRoomCodeCopied] = useState(false);
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   // Active View Tab
   const [activeTab, setActiveTab] = useState<'auction' | 'players' | 'squads' | 'analytics'>('auction');
@@ -32,7 +39,8 @@ export default function App() {
     logs: [],
     soldPlayers: {},
     unsoldPlayerIds: [],
-    activeUsers: {}
+    activeUsers: {},
+    lobbyStatus: 'waiting'
   });
 
   const [franchises, setFranchises] = useState<Record<string, Franchise>>({});
@@ -69,6 +77,26 @@ export default function App() {
       setConfigPasscode('');
     }
   };
+
+  // Create Room Form State
+  const [createRoomName, setCreateRoomName] = useState('IPL Live Bidding');
+  const [createIsPrivate, setCreateIsPrivate] = useState(false);
+  const [createPasscode, setCreatePasscode] = useState('');
+  const [createPoolSize, setCreatePoolSize] = useState('full');
+  const [createBudgetCrores, setCreateBudgetCrores] = useState(150);
+  const [createNumTeams, setCreateNumTeams] = useState(10);
+  const [createAuctionMode, setCreateAuctionMode] = useState('Normal');
+
+  // Room generation receipt state
+  const [generatedRoomCode, setGeneratedRoomCode] = useState('');
+  const [generatedPasscode, setGeneratedPasscode] = useState('');
+
+  // Join Room Form State
+  const [joinPlayerName, setJoinPlayerName] = useState(() => localStorage.getItem('ipl_username') || '');
+  const [joinRole, setJoinRole] = useState<'auctioneer' | 'franchise_owner' | 'spectator'>('franchise_owner');
+  const [joinRoomCode, setJoinRoomCode] = useState('');
+  const [joinPasscode, setJoinPasscode] = useState('');
+  const [joinInviteLinkInput, setJoinInviteLinkInput] = useState('');
 
   // Custom confirmation modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -113,6 +141,36 @@ export default function App() {
     }
   };
 
+  // Check URL pathname for deep link invitation e.g., /join/A7P9KD
+  useEffect(() => {
+    const parts = window.location.pathname.split('/');
+    if (parts[1] === 'join' && parts[2]) {
+      setPreFilledRoomCode(parts[2].toUpperCase());
+      setCurrentScreen('join_room');
+    }
+  }, []);
+
+  // Clear previous session indicators from local storage on mount (guarantees landing on Home on refresh)
+  useEffect(() => {
+    localStorage.removeItem('ipl_userId');
+    localStorage.removeItem('ipl_userRole');
+  }, []);
+
+  // Transition logged in users between lobby & bidding war depending on room status
+  useEffect(() => {
+    if (userId && userRole) {
+      if (auctionState.lobbyStatus === 'active') {
+        setCurrentScreen('auction');
+      } else {
+        setCurrentScreen('lobby');
+      }
+    } else {
+      if (currentScreen === 'lobby' || currentScreen === 'auction') {
+        setCurrentScreen('home');
+      }
+    }
+  }, [userId, userRole, auctionState.lobbyStatus]);
+
   // Connect to Real-time SSE Stream
   useEffect(() => {
     // Fetch once immediately
@@ -122,14 +180,19 @@ export default function App() {
     let retryTimeout: NodeJS.Timeout | null = null;
 
     function connectSSE() {
-      eventSource = new EventSource('/api/auction/stream');
+      const url = userId 
+        ? `/api/auction/stream?userId=${encodeURIComponent(userId)}` 
+        : '/api/auction/stream';
+      eventSource = new EventSource(url);
 
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           setAuctionState(data.auction);
           setFranchises(data.franchises);
-          setPlayers(data.players);
+          if (data.players) {
+            setPlayers(data.players);
+          }
           setIsConnected(true);
           setApiError(null);
         } catch (err) {
@@ -141,6 +204,9 @@ export default function App() {
         console.warn('SSE disconnected, retrying...', err);
         setIsConnected(false);
         eventSource?.close();
+
+        // Clear any existing retry timeout to prevent duplicate connections
+        if (retryTimeout) clearTimeout(retryTimeout);
 
         // Retry connection in 3 seconds
         retryTimeout = setTimeout(() => {
@@ -162,15 +228,15 @@ export default function App() {
       if (retryTimeout) clearTimeout(retryTimeout);
       clearInterval(pollingInterval);
     };
-  }, []);
+  }, [userId]);
 
   // Handle Joining Auction Room
-  const handleJoin = async (role: string, name: string, passcode?: string) => {
+  const handleJoin = async (role: string, name: string, roomCode: string, passcode?: string) => {
     try {
       const response = await fetch('/api/auction/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, username: name, passcode })
+        body: JSON.stringify({ role, username: name, roomCode, passcode })
       });
 
       const contentType = response.headers.get('content-type');
@@ -196,14 +262,77 @@ export default function App() {
     }
   };
 
-  // Handle Log out
-  const handleLogout = () => {
+  // Handle Select Franchise
+  const handleSelectFranchise = async (franchise: string | null) => {
+    if (!userId) return;
+    try {
+      const response = await fetch('/api/auction/select-team', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, franchise })
+      });
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType && contentType.includes('application/json');
+
+      if (response.ok) {
+        if (franchise) {
+          setUserRole(franchise);
+          localStorage.setItem('ipl_userRole', franchise);
+        } else {
+          setUserRole('franchise_owner');
+          localStorage.setItem('ipl_userRole', 'franchise_owner');
+        }
+        setApiError(null);
+      } else {
+        const errorMsg = isJson ? (await response.json()).error : 'Team selection failed';
+        setApiError(errorMsg || 'Team selection failed');
+      }
+    } catch (err) {
+      console.error('Select Franchise Error:', err);
+      setApiError('Network error selecting franchise');
+    }
+  };
+
+  // Handle Toggle Ready Status
+  const handleToggleReady = async (isReady: boolean) => {
+    if (!userId) return;
+    try {
+      const response = await fetch('/api/auction/ready', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, isReady })
+      });
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType && contentType.includes('application/json');
+
+      if (!response.ok) {
+        const errorMsg = isJson ? (await response.json()).error : 'Ready update failed';
+        setApiError(errorMsg || 'Ready update failed');
+      }
+    } catch (err) {
+      console.error('Ready Status Error:', err);
+      setApiError('Network error updating ready status');
+    }
+  };
+
+  // Handle Log out / Leaving the Room
+  const handleLogout = async () => {
+    if (userId) {
+      try {
+        await fetch('/api/auction/leave', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId })
+        });
+      } catch (err) {
+        console.error('Error leaving room:', err);
+      }
+    }
     localStorage.removeItem('ipl_userId');
     localStorage.removeItem('ipl_userRole');
-    localStorage.removeItem('ipl_username');
     setUserId(null);
     setUserRole(null);
-    setUsername(null);
+    setCurrentScreen('home');
     setActiveTab('auction');
   };
 
@@ -325,6 +454,44 @@ export default function App() {
     }
   };
 
+  // Handle custom room creation
+  const handleCreateCustomRoom = async (roomData: {
+    roomName: string;
+    isPrivate: boolean;
+    passcode: string;
+    playerPoolSize: string;
+    budgetCrores: number;
+    numTeams: number;
+    auctionMode: string;
+  }) => {
+    try {
+      const response = await fetch('/api/auction/admin/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create_room',
+          ...roomData
+        })
+      });
+
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType && contentType.includes('application/json');
+
+      if (response.ok && isJson) {
+        const result = await response.json();
+        setGeneratedRoomCode(result.state.roomCode || '');
+        setGeneratedPasscode(result.state.passcode || '');
+        setApiError(null);
+      } else {
+        const errorMsg = isJson ? (await response.json()).error : 'Failed to create room';
+        setApiError(errorMsg || 'Failed to create room');
+      }
+    } catch (err) {
+      console.error('Create Custom Room Error:', err);
+      setApiError('Network error creating room');
+    }
+  };
+
   // Register custom player (Admins/Auctioneer)
   const handleAddCustomPlayer = async (playerData: any) => {
     try {
@@ -349,6 +516,10 @@ export default function App() {
   const activePlayer = useMemo(() => {
     return players.find(p => p.id === auctionState.activePlayerId) || null;
   }, [players, auctionState.activePlayerId]);
+
+  const isAuctioneerConnected = useMemo(() => {
+    return Object.values(auctionState.activeUsers || {}).some(u => u.role === 'auctioneer');
+  }, [auctionState.activeUsers]);
 
   // Unbid players list (for Auctioneer panel release)
   const unbidPlayers = useMemo(() => {
@@ -407,6 +578,7 @@ export default function App() {
 
   // Check bidding eligibility for current team owner
   const biddingRuleCheck = useMemo(() => {
+    if (!isAuctioneerConnected) return { eligible: false, reason: 'Auctioneer is disconnected' };
     if (!myFranchise || !activePlayer) return { eligible: false, reason: '' };
 
     if (myFranchise.playersBoughtIds.length >= 25) {
@@ -428,16 +600,926 @@ export default function App() {
     return { eligible: true, reason: '' };
   }, [myFranchise, activePlayer, nextMinBidLakhs, auctionState.highestBidder, userRole]);
 
+  // --- SPA SCREEN RENDERS ---
+
+  const renderHomeScreen = () => {
+    const hasActiveRoom = !!auctionState.roomCode;
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-md w-full space-y-8 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+          
+          <div className="text-center space-y-4">
+            <div className="inline-flex items-center justify-center space-x-2 bg-gradient-to-r from-amber-500 to-yellow-400 p-3 rounded-2xl shadow-lg">
+              <Trophy className="w-8 h-8 text-slate-950 animate-pulse" />
+              <span className="font-display font-black text-xl tracking-wider text-slate-950 uppercase">IPL Live Auction</span>
+            </div>
+            <h2 className="text-2xl font-extrabold tracking-tight text-white uppercase font-display">
+              Multiplayer Auction Platform
+            </h2>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed font-medium">
+              Experience the authentic thrill of the IPL auction. Connect with friends to own franchises, bid for players, and analyze squads in real-time.
+            </p>
+          </div>
+
+          <div className="space-y-4 pt-4">
+            {apiError && (
+              <div className="bg-red-950/40 border border-red-800/80 text-red-400 px-4 py-2.5 rounded-xl text-xs font-bold text-center animate-pulse">
+                {apiError}
+              </div>
+            )}
+
+            <button
+              onClick={() => {
+                setApiError(null);
+                setCurrentScreen('create_room');
+              }}
+              className="w-full flex items-center justify-between p-4 rounded-2xl border bg-slate-950 border-slate-850 text-slate-200 hover:border-amber-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
+            >
+              <div className="flex items-center space-x-3">
+                <div className="p-2 rounded-xl bg-amber-500/10 text-yellow-400 border border-yellow-500/25 group-hover:bg-amber-500/25 transition-colors">
+                  <Landmark className="w-5 h-5" />
+                </div>
+                <div className="text-left">
+                  <h4 className="font-bold text-sm">Create Auction Room</h4>
+                  <p className="text-[10px] text-slate-500 font-semibold">Host a new public or private room</p>
+                </div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-500 transition-colors" />
+            </button>
+
+            <button
+              onClick={() => {
+                setApiError(null);
+                setCurrentScreen('join_room');
+              }}
+              className="w-full flex items-center justify-between p-4 rounded-2xl border bg-slate-950 border-slate-850 text-slate-200 hover:border-amber-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
+            >
+              <div className="flex items-center space-x-3">
+                <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-450 border border-indigo-500/25 group-hover:bg-indigo-500/25 transition-colors">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div className="text-left">
+                  <h4 className="font-bold text-sm">Join Room</h4>
+                  <p className="text-[10px] text-slate-500 font-semibold">Enter with a room code or link</p>
+                </div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-500 transition-colors" />
+            </button>
+
+            {hasActiveRoom && !auctionState.isPrivate && (
+              <button
+                onClick={async () => {
+                  setApiError(null);
+                  const randomName = 'Spectator_' + Math.random().toString(36).substring(2, 6).toUpperCase();
+                  await handleJoin('spectator', randomName, auctionState.roomCode || '');
+                }}
+                className="w-full flex items-center justify-between p-4 rounded-2xl border bg-indigo-950/20 border-indigo-900/50 text-slate-200 hover:border-indigo-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
+              >
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-550/25">
+                    <Activity className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div className="text-left">
+                    <h4 className="font-bold text-sm text-indigo-300">Spectate Public Room</h4>
+                    <p className="text-[10px] text-indigo-450 font-semibold">Watch active room live: {auctionState.roomName}</p>
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-indigo-400 group-hover:text-indigo-300 transition-colors" />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderCreateRoomScreen = () => {
+    const inviteLink = generatedRoomCode 
+      ? `${window.location.origin}/join/${generatedRoomCode}`
+      : '';
+
+    const handleCopyCode = () => {
+      navigator.clipboard.writeText(generatedRoomCode);
+      setRoomCodeCopied(true);
+      setTimeout(() => setRoomCodeCopied(false), 2000);
+    };
+
+    const handleCopyInvite = () => {
+      navigator.clipboard.writeText(inviteLink);
+      setInviteCopied(true);
+      setTimeout(() => setInviteCopied(false), 2000);
+    };
+
+    if (generatedRoomCode) {
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
+          <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+            
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/25 flex items-center justify-center mx-auto mb-2">
+                <Check className="w-6 h-6 animate-bounce" />
+              </div>
+              <h2 className="text-2xl font-black tracking-tight text-white uppercase font-display">Room Generated!</h2>
+              <p className="text-xs text-slate-400 font-medium">Invite your friends to own franchises and bid.</p>
+            </div>
+
+            <div className="space-y-4 pt-2">
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 flex flex-col items-center">
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Room Code</span>
+                <div className="flex items-center space-x-3 mt-1.5">
+                  <span className="font-mono font-black text-3xl tracking-widest text-yellow-400">{generatedRoomCode}</span>
+                  <button
+                    onClick={handleCopyCode}
+                    className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-all cursor-pointer flex items-center justify-center"
+                    title="Copy Code"
+                  >
+                    {roomCodeCopied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                </div>
+                {roomCodeCopied && <span className="text-[9px] text-emerald-400 font-bold mt-1.5">Copied code to clipboard!</span>}
+              </div>
+
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850">
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block text-center">Shareable Invite Link</span>
+                <div className="flex items-center space-x-2 mt-2 bg-slate-900 border border-slate-850 rounded-xl p-2 pl-3">
+                  <Link className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" />
+                  <span className="text-[10px] text-slate-400 truncate font-mono select-all flex-1">{inviteLink}</span>
+                  <button
+                    onClick={handleCopyInvite}
+                    className="p-1.5 bg-slate-950 hover:bg-slate-800 border border-slate-850 rounded-lg text-slate-300 hover:text-white transition-all cursor-pointer flex-shrink-0 flex items-center justify-center"
+                    title="Copy Invite Link"
+                  >
+                    {inviteCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+                {inviteCopied && <span className="text-[9px] text-emerald-400 font-bold mt-1.5 block text-center">Copied link to clipboard!</span>}
+              </div>
+
+              {generatedPasscode && (
+                <div className="bg-amber-500/5 p-3 rounded-2xl border border-amber-500/20 text-center flex flex-col items-center">
+                  <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Private Passcode</span>
+                  <span className="text-sm font-mono font-black text-amber-400 mt-0.5">{generatedPasscode}</span>
+                </div>
+              )}
+
+              <button
+                onClick={async () => {
+                  const name = username || 'Host';
+                  const code = generatedRoomCode;
+                  setGeneratedRoomCode('');
+                  setGeneratedPasscode('');
+                  await handleJoin('auctioneer', name, code);
+                }}
+                className="w-full bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-sm uppercase py-4 rounded-2xl transition-all shadow-lg hover:shadow-yellow-500/20 active:scale-98 cursor-pointer text-center block"
+              >
+                Enter Waiting Lobby
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+          
+          <div className="text-center space-y-1">
+            <h2 className="text-2xl font-black tracking-tight text-white uppercase font-display">Configure Room</h2>
+            <p className="text-xs text-slate-400 font-medium">Specify rules for this IPL Auction session.</p>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleCreateCustomRoom({
+                roomName: createRoomName,
+                isPrivate: createIsPrivate,
+                passcode: createPasscode,
+                playerPoolSize: createPoolSize,
+                budgetCrores: createBudgetCrores,
+                numTeams: createNumTeams,
+                auctionMode: createAuctionMode
+              });
+            }}
+            className="space-y-4"
+          >
+            {/* Room Name */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Room Name</label>
+              <input
+                type="text"
+                required
+                value={createRoomName}
+                onChange={(e) => setCreateRoomName(e.target.value)}
+                placeholder="e.g. Weekend IPL Draft"
+                className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs text-slate-200 placeholder-slate-650 outline-none transition-all"
+              />
+            </div>
+
+            {/* Visibility Selection */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Auction Type</label>
+              <div className="flex space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setCreateIsPrivate(false)}
+                  className={`flex-1 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                    !createIsPrivate
+                      ? 'bg-slate-950 border-amber-500 text-white shadow-md font-bold'
+                      : 'bg-slate-950/20 border-slate-850 text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  🌍 Public
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreateIsPrivate(true)}
+                  className={`flex-1 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                    createIsPrivate
+                      ? 'bg-slate-950 border-amber-500 text-amber-450 shadow-md font-bold'
+                      : 'bg-slate-950/20 border-slate-850 text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  🔑 Private
+                </button>
+              </div>
+            </div>
+
+            {/* Private Passcode */}
+            {createIsPrivate && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Private Room Passcode</label>
+                <input
+                  type="text"
+                  required
+                  value={createPasscode}
+                  onChange={(e) => setCreatePasscode(e.target.value)}
+                  placeholder="Enter passcode shared with joiners"
+                  className="w-full bg-slate-950 border border-amber-500/40 focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs text-amber-400 outline-none transition-all font-mono"
+                />
+              </div>
+            )}
+
+            {/* Player Pool Size */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Player Pool</label>
+              <div className="grid grid-cols-4 gap-1">
+                {[
+                  { id: '15', label: '15' },
+                  { id: '20', label: '20' },
+                  { id: '25', label: '25' },
+                  { id: 'full', label: 'Full' }
+                ].map(pool => (
+                  <button
+                    type="button"
+                    key={pool.id}
+                    onClick={() => {
+                      setCreatePoolSize(pool.id);
+                      if (pool.id === '15') {
+                        setCreateBudgetCrores(120);
+                      } else if (pool.id === '20') {
+                        setCreateBudgetCrores(135);
+                      } else if (pool.id === '25' || pool.id === 'full') {
+                        setCreateBudgetCrores(150);
+                      }
+                    }}
+                    className={`py-2 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                      createPoolSize === pool.id
+                        ? 'bg-amber-500/10 border-amber-500 text-white font-bold'
+                        : 'bg-slate-950 border-slate-850 text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {pool.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Budget Crores */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Auction Budget per Team</label>
+              <div className="grid grid-cols-3 gap-1">
+                {[120, 135, 150].map(budget => (
+                  <button
+                    type="button"
+                    key={budget}
+                    onClick={() => setCreateBudgetCrores(budget)}
+                    className={`py-2 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                      createBudgetCrores === budget
+                        ? 'bg-amber-500/10 border-amber-500 text-white font-bold'
+                        : 'bg-slate-950 border-slate-850 text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    ₹{budget} Crore
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Number of Teams */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Number of Teams: <span className="text-yellow-400 font-extrabold">{createNumTeams}</span></label>
+              <input
+                type="range"
+                min="2"
+                max="10"
+                step="1"
+                value={createNumTeams}
+                onChange={(e) => setCreateNumTeams(Number(e.target.value))}
+                className="w-full accent-amber-500 bg-slate-950 cursor-pointer h-1.5 rounded-lg"
+              />
+              <div className="flex justify-between text-[8px] text-slate-500 font-mono">
+                <span>2 TEAMS</span>
+                <span>6 TEAMS</span>
+                <span>10 TEAMS</span>
+              </div>
+            </div>
+
+            {/* Mode selector */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Auction Mode</label>
+              <div className="flex space-x-2">
+                {['Normal', 'Fast Draft'].map(m => (
+                  <button
+                    type="button"
+                    key={m}
+                    onClick={() => setCreateAuctionMode(m)}
+                    className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                      createAuctionMode === m
+                        ? 'bg-amber-500/10 border-amber-500 text-white font-bold'
+                        : 'bg-slate-950 border-slate-850 text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setCurrentScreen('home')}
+                className="flex-1 bg-slate-900 border border-slate-850 text-slate-300 hover:text-white py-3 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center"
+              >
+                Back
+              </button>
+              <button
+                type="submit"
+                className="flex-1 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-xs uppercase py-3 rounded-xl transition-all shadow-lg hover:shadow-yellow-500/20 active:scale-98 cursor-pointer text-center"
+              >
+                Generate Room
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const renderJoinRoomScreen = () => {
+    if (preFilledRoomCode && !joinRoomCode) {
+      setJoinRoomCode(preFilledRoomCode);
+    }
+
+    const handleSubmitJoin = (e: React.FormEvent) => {
+      e.preventDefault();
+      handleJoin(joinRole, joinPlayerName, joinRoomCode, joinPasscode);
+    };
+
+    const handleInviteLinkChange = (val: string) => {
+      setJoinInviteLinkInput(val);
+      try {
+        const url = new URL(val);
+        const parts = url.pathname.split('/');
+        if (parts[1] === 'join' && parts[2]) {
+          setJoinRoomCode(parts[2].toUpperCase());
+        }
+      } catch (e) {
+        if (val.length === 6) {
+          setJoinRoomCode(val.toUpperCase());
+        }
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
+          
+          <div className="text-center space-y-1">
+            <h2 className="text-2xl font-black tracking-tight text-white uppercase font-display">Join Auction</h2>
+            <p className="text-xs text-slate-400 font-medium">Enter room credentials to participate.</p>
+          </div>
+
+          <form onSubmit={handleSubmitJoin} className="space-y-4">
+            {apiError && (
+              <div className="bg-red-950/40 border border-red-800/80 text-red-400 px-4 py-2.5 rounded-xl text-xs font-bold text-center animate-pulse">
+                {apiError}
+              </div>
+            )}
+
+            {/* Player Name */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Player Name</label>
+              <input
+                type="text"
+                required
+                value={joinPlayerName}
+                onChange={(e) => setJoinPlayerName(e.target.value)}
+                placeholder="e.g. Rahul, Arjun, Parthiv"
+                className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs text-slate-200 placeholder-slate-650 outline-none transition-all"
+              />
+            </div>
+
+            {/* Paste Invite Link */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Paste Invite Link OR Room Code</label>
+              <input
+                type="text"
+                value={joinInviteLinkInput}
+                onChange={(e) => handleInviteLinkChange(e.target.value)}
+                placeholder="e.g. https://mywebsite.com/join/A7P9KD"
+                className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs text-slate-200 placeholder-slate-650 outline-none transition-all font-mono"
+              />
+            </div>
+
+            {/* Room Code */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Verified Room Code</label>
+              <input
+                type="text"
+                required
+                readOnly={!!preFilledRoomCode}
+                value={joinRoomCode}
+                onChange={(e) => setJoinRoomCode(e.target.value.toUpperCase())}
+                placeholder="A7P9KD"
+                className={`w-full bg-slate-950 border rounded-xl px-4 py-2.5 text-xs outline-none transition-all font-mono text-center tracking-widest font-black ${
+                  preFilledRoomCode ? 'border-emerald-500/40 text-emerald-405 cursor-not-allowed bg-emerald-500/5' : 'border-slate-800 focus:border-amber-500 text-yellow-400'
+                }`}
+              />
+            </div>
+
+            {/* Role selection */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Select Role</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: 'franchise_owner', label: 'Owner', desc: 'Own franchise' },
+                  { id: 'spectator', label: 'Spectator', desc: 'Watch live' },
+                  { id: 'auctioneer', label: 'Auctioneer', desc: 'Admin' }
+                ].map(r => (
+                  <button
+                    type="button"
+                    key={r.id}
+                    onClick={() => setJoinRole(r.id as any)}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                      joinRole === r.id
+                        ? 'bg-amber-500/10 border-amber-500 text-white shadow-md'
+                        : 'bg-slate-950 border-slate-850 text-slate-400 hover:text-slate-350'
+                    }`}
+                  >
+                    <span className="text-xs font-extrabold uppercase leading-tight">{r.label}</span>
+                    <span className="text-[8px] text-slate-500 font-medium leading-none mt-1">{r.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Passcode (if private) */}
+            {joinRole !== 'auctioneer' && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Passcode (If Room is Private)</label>
+                <input
+                  type="password"
+                  value={joinPasscode}
+                  onChange={(e) => setJoinPasscode(e.target.value)}
+                  placeholder="Passcode from Auctioneer"
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-4 py-2.5 text-xs text-slate-200 placeholder-slate-650 outline-none transition-all font-mono text-center"
+                />
+              </div>
+            )}
+
+            <div className="flex items-center space-x-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPreFilledRoomCode('');
+                  setJoinRoomCode('');
+                  setJoinInviteLinkInput('');
+                  setCurrentScreen('home');
+                }}
+                className="flex-1 bg-slate-900 border border-slate-850 text-slate-300 hover:text-white py-3 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!joinPlayerName || !joinRoomCode}
+                className={`flex-1 font-black text-xs uppercase py-3 rounded-xl transition-all shadow-lg text-center cursor-pointer ${
+                  joinPlayerName && joinRoomCode
+                    ? 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:shadow-yellow-500/20 active:scale-98'
+                    : 'bg-slate-850 text-slate-600 cursor-not-allowed'
+                }`}
+              >
+                Join Room
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  // Lobby Screen Render
+  const renderLobbyScreen = () => {
+    const activeUsersList = Object.values(auctionState.activeUsers || {});
+    
+    // Check if the current user is ready
+    const myUser = activeUsersList.find(u => u.userId === userId);
+    const isReady = myUser?.isReady || false;
+    const myFranchiseSelection = myUser?.franchise || null;
+
+    // Check how many teams are configured
+    const maxTeamsCount = auctionState.numTeams || 10;
+    const teamKeys = [
+      { name: 'CSK', fullName: 'Chennai Super Kings', color: '#F7D117', textColor: '#000000' },
+      { name: 'MI', fullName: 'Mumbai Indians', color: '#004BA0', textColor: '#FFFFFF' },
+      { name: 'RCB', fullName: 'Royal Challengers Bengaluru', color: '#EC1C24', textColor: '#FFFFFF' },
+      { name: 'KKR', fullName: 'Kolkata Knight Riders', color: '#2E0854', textColor: '#F7D117' },
+      { name: 'GT', fullName: 'Gujarat Titans', color: '#1B254B', textColor: '#D4AF37' },
+      { name: 'RR', fullName: 'Rajasthan Royals', color: '#EA1A85', textColor: '#FFFFFF' },
+      { name: 'SRH', fullName: 'Sunrisers Hyderabad', color: '#FF8225', textColor: '#000000' },
+      { name: 'PBKS', fullName: 'Punjab Kings', color: '#D71920', textColor: '#FFFFFF' },
+      { name: 'LSG', fullName: 'Lucknow Super Giants', color: '#0057B8', textColor: '#FFD700' },
+      { name: 'DC', fullName: 'Delhi Capitals', color: '#000080', textColor: '#FF4500' }
+    ].slice(0, maxTeamsCount);
+
+    // Enforce condition for Auctioneer to start:
+    // - There is at least 1 Franchise Owner
+    // - Every connected Franchise Owner has selected a team
+    // - Every connected Franchise Owner is Ready
+    const franchiseOwners = activeUsersList.filter(u => u.role === 'franchise_owner');
+    const allOwnersSelected = franchiseOwners.length > 0 && franchiseOwners.every(u => !!u.franchise);
+    const allOwnersReady = franchiseOwners.length > 0 && franchiseOwners.every(u => u.isReady);
+    const canStartAuction = franchiseOwners.length > 0 && allOwnersSelected && allOwnersReady;
+
+    const lobbyInviteLink = `${window.location.origin}/join/${auctionState.roomCode || ''}`;
+
+    const handleCopyCodeLobby = () => {
+      navigator.clipboard.writeText(auctionState.roomCode || '');
+      setRoomCodeCopied(true);
+      setTimeout(() => setRoomCodeCopied(false), 2000);
+    };
+
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+        
+        {/* Lobby Header */}
+        <header className="bg-slate-900 border-b border-slate-800 py-4 px-6 flex justify-between items-center sticky top-0 z-50">
+          <div className="flex items-center space-x-3">
+            <div className="bg-amber-500/10 p-2 rounded-xl text-yellow-400 border border-yellow-500/20">
+              <Landmark className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <h1 className="text-base font-extrabold text-white tracking-tight uppercase font-display flex items-center gap-2">
+                <span>{auctionState.roomName}</span>
+                <span className="text-[9px] bg-amber-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20">
+                  {auctionState.isPrivate ? '🔑 PRIVATE LOBBY' : '🌍 PUBLIC LOBBY'}
+                </span>
+              </h1>
+              <p className="text-[10px] text-slate-400 font-mono">Waiting Lobby System</p>
+            </div>
+          </div>
+          
+          <button
+            onClick={handleLogout}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-850 text-xs font-semibold text-slate-400 hover:text-red-400 hover:border-red-950 transition-all cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Leave Room</span>
+          </button>
+        </header>
+
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* Left Side: Room details & Connected Users panel (5 cols) */}
+          <div className="lg:col-span-5 space-y-6">
+            
+            {/* Lobby Information Card */}
+            <div className="bg-slate-900/40 border border-slate-850 p-5 rounded-3xl space-y-4">
+              <h3 className="font-extrabold text-xs text-white uppercase tracking-wider">Lobby Info</h3>
+              
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-850">
+                  <div className="text-[9px] text-slate-500 font-bold uppercase">Room Code</div>
+                  <div className="flex items-center space-x-2 mt-0.5">
+                    <span className="font-mono font-black text-sm text-yellow-400">{auctionState.roomCode}</span>
+                    <button
+                      onClick={handleCopyCodeLobby}
+                      className="p-1 hover:bg-slate-900 rounded text-slate-400 hover:text-white transition-colors cursor-pointer"
+                      title="Copy Code"
+                    >
+                      {roomCodeCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    </button>
+                  </div>
+                </div>
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-850">
+                  <div className="text-[9px] text-slate-500 font-bold uppercase">Player Pool</div>
+                  <div className="font-mono font-bold text-slate-200 mt-0.5">{auctionState.playerPoolSize === 'full' ? 'Full Pool (333)' : `${auctionState.playerPoolSize} Players`}</div>
+                </div>
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-850">
+                  <div className="text-[9px] text-slate-500 font-bold uppercase">Team Budget</div>
+                  <div className="font-mono font-bold text-emerald-400 mt-0.5">₹{(auctionState.totalPurseLakhs || 15000) / 100} Crore</div>
+                </div>
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-850">
+                  <div className="text-[9px] text-slate-500 font-bold uppercase">Franchises</div>
+                  <div className="font-mono font-bold text-slate-200 mt-0.5">{maxTeamsCount} Teams</div>
+                </div>
+              </div>
+
+              {/* Invite link snippet */}
+              <div className="bg-slate-950 p-3 rounded-xl border border-slate-850 space-y-1">
+                <span className="text-[9px] text-slate-500 font-bold uppercase block text-center">Share Invitation</span>
+                <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-lg p-1.5 pl-2 text-[10px]">
+                  <span className="text-slate-400 font-mono truncate select-all flex-1">{lobbyInviteLink}</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(lobbyInviteLink);
+                      setInviteCopied(true);
+                      setTimeout(() => setInviteCopied(false), 2000);
+                    }}
+                    className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors cursor-pointer flex-shrink-0"
+                  >
+                    {inviteCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Connected Users panel */}
+            <div className="bg-slate-900/40 border border-slate-850 p-5 rounded-3xl space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-850/60 pb-2">
+                <h3 className="font-extrabold text-xs text-white uppercase tracking-wider flex items-center space-x-1.5">
+                  <Users className="w-4 h-4 text-amber-500" />
+                  <span>Connected Players ({activeUsersList.length})</span>
+                </h3>
+              </div>
+
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {activeUsersList.map(user => {
+                  const isCurrent = user.userId === userId;
+                  const selectedTeam = teamKeys.find(t => t.name === user.franchise);
+                  
+                  return (
+                    <div 
+                      key={user.userId}
+                      className={`flex items-center justify-between p-2.5 rounded-xl border text-xs transition-all ${
+                        isCurrent 
+                          ? 'bg-slate-950 border-amber-500/40 shadow-sm' 
+                          : 'bg-slate-950 border-slate-850'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2.5 min-w-0 mr-2">
+                        {/* Initials badge */}
+                        <div 
+                          className="w-8 h-8 rounded-lg flex items-center justify-center font-display font-black text-xs flex-shrink-0"
+                          style={{
+                            backgroundColor: selectedTeam ? `${selectedTeam.color}15` : '#1e293b',
+                            color: selectedTeam ? selectedTeam.color : '#94a3b8',
+                            border: `1px solid ${selectedTeam ? selectedTeam.color : '#334155'}`
+                          }}
+                        >
+                          {user.username.substring(0, 2).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-200 truncate flex items-center gap-1.5">
+                            <span>{user.username}</span>
+                            {isCurrent && <span className="text-[8px] bg-yellow-500/10 text-yellow-400 px-1 py-0.2 rounded border border-yellow-500/25">YOU</span>}
+                          </div>
+                          <div className="text-[9px] text-slate-500 font-semibold uppercase mt-0.5">
+                            {user.role === 'auctioneer' ? 'Auctioneer Admin' : user.role === 'spectator' ? 'Spectator' : user.franchise ? `${user.franchise} Owner` : 'Franchise Owner'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-2 flex-shrink-0">
+                        {user.role === 'franchise_owner' && (
+                          <span className={`px-2 py-0.5 rounded-md font-black text-[9px] ${
+                            user.isReady 
+                              ? 'bg-emerald-500/10 text-emerald-450 border border-emerald-500/20' 
+                              : 'bg-slate-900 text-slate-500 border border-slate-850'
+                          }`}>
+                            {user.isReady ? '✔ READY' : 'WAITING'}
+                          </span>
+                        )}
+                        {user.role === 'auctioneer' && (
+                          <span className="bg-amber-500/10 text-yellow-450 px-2 py-0.5 rounded-md font-black text-[9px] border border-yellow-500/20 font-bold">HOST</span>
+                        )}
+                        {user.role === 'spectator' && (
+                          <span className="bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-md font-black text-[9px] border border-indigo-500/20 font-bold">WATCHING</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+          </div>
+
+          {/* Right Side: Team Status Panel & Ready actions (7 cols) */}
+          <div className="lg:col-span-7 space-y-6">
+            
+            {/* Team selection status */}
+            <div className="bg-slate-900/40 border border-slate-850 p-5 rounded-3xl space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-850/60 pb-2">
+                <h3 className="font-extrabold text-xs text-white uppercase tracking-wider">IPL Franchise Ownership</h3>
+                <span className="text-[10px] text-slate-500">Only 1 Owner per Franchise</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {teamKeys.map(team => {
+                  // Find owner
+                  const owner = activeUsersList.find(u => u.franchise === team.name);
+                  const isOwnedByMe = myFranchiseSelection === team.name;
+                  const isUserFranchiseOwner = myUser?.role === 'franchise_owner';
+                  
+                  return (
+                    <div 
+                      key={team.name}
+                      className="relative p-3 rounded-2xl bg-slate-950 border border-slate-850 flex items-center justify-between transition-all overflow-hidden"
+                    >
+                      {/* Left color bar */}
+                      <div 
+                        className="absolute left-0 top-0 bottom-0 w-1.5"
+                        style={{ backgroundColor: team.color }}
+                      />
+
+                      <div className="pl-3 min-w-0 mr-2">
+                        <span className="font-sans font-black text-sm tracking-wide block" style={{ color: team.color }}>
+                          {team.name}
+                        </span>
+                        <span className="text-[10px] text-slate-400 truncate block font-medium mt-0.5">{team.fullName}</span>
+                        {owner ? (
+                          <span className="text-[9px] text-amber-500 font-bold block mt-1">
+                            ✔ Owned by {owner.username}
+                          </span>
+                        ) : (
+                          <span className="text-[9px] text-slate-650 italic block mt-1">Available</span>
+                        )}
+                      </div>
+
+                      {isUserFranchiseOwner && (
+                        <div className="flex-shrink-0">
+                          {owner ? (
+                            isOwnedByMe ? (
+                              <button
+                                onClick={() => handleSelectFranchise(null)}
+                                className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-550/20 text-red-400 font-black text-[9px] uppercase rounded-lg tracking-wider transition-colors cursor-pointer"
+                              >
+                                Release
+                              </button>
+                            ) : (
+                              <span className="px-2.5 py-1 bg-slate-900 border border-slate-850 text-slate-650 font-black text-[9px] uppercase rounded-lg tracking-wider cursor-not-allowed font-bold">
+                                Occupied
+                              </span>
+                            )
+                          ) : (
+                            <button
+                              onClick={() => handleSelectFranchise(team.name)}
+                              disabled={!!myFranchiseSelection}
+                              className={`px-3 py-1 font-black text-[9px] uppercase rounded-lg tracking-wider transition-all cursor-pointer ${
+                                myFranchiseSelection 
+                                  ? 'bg-slate-900 border border-slate-850 text-slate-650 cursor-not-allowed font-bold'
+                                  : 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:scale-102 active:scale-95'
+                              }`}
+                            >
+                              Claim
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Waiting/Actions panel */}
+            <div className="bg-slate-900/40 border border-slate-850 p-6 rounded-3xl flex flex-col justify-center items-center text-center space-y-4">
+              {myUser?.role === 'auctioneer' ? (
+                // Auctioneer / Host start panel
+                <div className="w-full space-y-4">
+                  <div className="space-y-1">
+                    <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">Start Auction Controls</h3>
+                    <p className="text-xs text-slate-400 font-medium">
+                      You must wait for required franchise owners to claim teams and click ready.
+                    </p>
+                  </div>
+
+                  {/* Criteria Checklist */}
+                  <div className="bg-slate-950 rounded-2xl p-4 border border-slate-850 text-xs text-left space-y-2.5 max-w-sm mx-auto">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">Franchise Owner Connected:</span>
+                      <span className={`font-mono font-bold ${franchiseOwners.length > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {franchiseOwners.length > 0 ? '✔ YES' : '❌ NO'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">All Owners Selected Team:</span>
+                      <span className={`font-mono font-bold ${allOwnersSelected ? 'text-emerald-400' : 'text-slate-500'}`}>
+                        {allOwnersSelected ? '✔ YES' : '⏳ PENDING'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">All Joined Owners Ready:</span>
+                      <span className={`font-mono font-bold ${allOwnersReady ? 'text-emerald-400' : 'text-slate-500'}`}>
+                        {allOwnersReady ? '✔ YES' : '⏳ PENDING'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleAdminAction('start_auction')}
+                    disabled={!canStartAuction}
+                    className={`w-full max-w-sm py-4 rounded-2xl font-black text-sm uppercase tracking-wider transition-all shadow-lg mx-auto block cursor-pointer ${
+                      canStartAuction
+                        ? 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:shadow-yellow-500/25 hover:scale-102 active:scale-98'
+                        : 'bg-slate-800 border border-slate-850 text-slate-650 cursor-not-allowed font-bold'
+                    }`}
+                  >
+                    Start Auction Live
+                  </button>
+                </div>
+              ) : (
+                // Franchise Owner / Spectator panel
+                <div className="w-full space-y-4">
+                  {myUser?.role === 'franchise_owner' && (
+                    <div className="space-y-4">
+                      <div className="space-y-1">
+                        <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">Ready Status Check</h3>
+                        <p className="text-xs text-slate-400 font-medium">
+                          Toggle your ready status. The host can only launch once everyone is checked in.
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => handleToggleReady(!isReady)}
+                        disabled={!myFranchiseSelection}
+                        className={`w-full max-w-sm py-4 rounded-2xl font-black text-sm uppercase tracking-wider transition-all shadow-lg mx-auto block cursor-pointer border ${
+                          isReady 
+                            ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500 text-emerald-400 font-bold' 
+                            : myFranchiseSelection 
+                              ? 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 border-transparent hover:shadow-yellow-500/15'
+                              : 'bg-slate-900 border-slate-850 text-slate-650 cursor-not-allowed font-bold'
+                        }`}
+                      >
+                        {!myFranchiseSelection 
+                          ? 'Select Franchise First' 
+                          : isReady 
+                            ? '✔ You are Ready' 
+                            : 'Set Ready Status'}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Illustration/Waiting Status indicator */}
+                  <div className="pt-2 flex flex-col items-center space-y-2">
+                    <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-950 border border-slate-800 text-yellow-400 animate-spin">
+                      <RefreshCw className="w-5 h-5 text-amber-500" />
+                    </div>
+                    <span className="text-xs font-semibold text-slate-400 tracking-wide uppercase">Waiting for Auctioneer to start...</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+          </div>
+
+        </main>
+      </div>
+    );
+  };
+
   // Render selection if not logged in
   if (!userId || !userRole) {
-    return (
-      <RoleSelection 
-        franchises={franchises} 
-        activeUsers={auctionState.activeUsers} 
-        onJoin={handleJoin} 
-        isPrivate={auctionState.isPrivate}
-      />
-    );
+    if (currentScreen === 'create_room') {
+      return renderCreateRoomScreen();
+    }
+    if (currentScreen === 'join_room') {
+      return renderJoinRoomScreen();
+    }
+    return renderHomeScreen();
+  }
+
+  // Render Waiting Lobby if lobby view is active
+  if (currentScreen === 'lobby') {
+    return renderLobbyScreen();
   }
 
   return (
@@ -739,6 +1821,16 @@ export default function App() {
             
             {/* Left: Main bidding arena (8 columns) */}
             <div className="lg:col-span-8 space-y-6">
+              
+              {!isAuctioneerConnected && (
+                <div className="bg-red-950/40 border-2 border-red-500 text-red-400 p-6 rounded-3xl text-center space-y-2 animate-pulse shadow-lg">
+                  <AlertTriangle className="w-8 h-8 mx-auto text-red-550" />
+                  <h3 className="font-extrabold text-base uppercase text-white font-display">Auctioneer Disconnected</h3>
+                  <p className="text-xs text-slate-300 font-bold">
+                    Auctioneer disconnected. Waiting for reconnection...
+                  </p>
+                </div>
+              )}
               
               {/* Room Configuration Banner */}
               <div className="bg-gradient-to-r from-slate-900 via-slate-950 to-slate-900 border border-slate-800/80 p-4 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">

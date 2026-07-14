@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -32,7 +34,11 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('Promise:', promise);
   console.error('====================================================');
 });
-const STATE_FILE_PATH = path.join(process.cwd(), 'auction_state.json');
+const DATA_DIR = path.join(process.cwd(), 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+const STATE_FILE_PATH = path.join(DATA_DIR, 'auction_state.json');
 
 // Initialize Gemini Client
 let aiClient: GoogleGenAI | null = null;
@@ -105,7 +111,13 @@ let state: FullServerState = {
     totalPurseLakhs: 15000,
     isPrivate: false,
     passcode: '',
-    isEnded: false
+    isEnded: false,
+    roomName: 'IPL Live Auction',
+    roomCode: '',
+    playerPoolSize: 'full',
+    numTeams: 10,
+    auctionMode: 'Normal',
+    lobbyStatus: 'waiting'
   },
   players: [...playersData]
 };
@@ -134,6 +146,24 @@ function loadState() {
         }
         if (state.auction.isEnded === undefined) {
           state.auction.isEnded = false;
+        }
+        if (state.auction.roomName === undefined) {
+          state.auction.roomName = 'IPL Live Auction';
+        }
+        if (state.auction.roomCode === undefined) {
+          state.auction.roomCode = '';
+        }
+        if (state.auction.playerPoolSize === undefined) {
+          state.auction.playerPoolSize = 'full';
+        }
+        if (state.auction.numTeams === undefined) {
+          state.auction.numTeams = 10;
+        }
+        if (state.auction.auctionMode === undefined) {
+          state.auction.auctionMode = 'Normal';
+        }
+        if (state.auction.lobbyStatus === undefined) {
+          state.auction.lobbyStatus = 'waiting';
         }
         if (loaded.franchises) {
           franchises = loaded.franchises;
@@ -177,17 +207,31 @@ function loadState() {
 }
 
 // Helper to save state
+let isSaving = false;
+let pendingSave = false;
+
+// Helper to save state asynchronously to prevent blocking the event loop
 function saveState() {
-  try {
-    const dataToSave = {
-      auction: state.auction,
-      players: state.players,
-      franchises: franchises
-    };
-    fs.writeFileSync(STATE_FILE_PATH, JSON.stringify(dataToSave, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving state to disk:', err);
+  if (isSaving) {
+    pendingSave = true;
+    return;
   }
+  isSaving = true;
+  const dataToSave = {
+    auction: state.auction,
+    players: state.players,
+    franchises: franchises
+  };
+  fs.writeFile(STATE_FILE_PATH, JSON.stringify(dataToSave, null, 2), 'utf-8', (err) => {
+    isSaving = false;
+    if (err) {
+      console.error('Error saving state to disk:', err);
+    }
+    if (pendingSave) {
+      pendingSave = false;
+      saveState();
+    }
+  });
 }
 
 loadState();
@@ -196,12 +240,16 @@ loadState();
 let sseClients: any[] = [];
 
 // Helper to broadcast state to all SSE clients
-function broadcastState() {
-  const payload = {
+// Helper to broadcast state to all SSE clients
+// We omit the heavy 'players' list by default during frequent updates (e.g. countdowns/bids)
+function broadcastState(includePlayers = false) {
+  const payload: any = {
     auction: state.auction,
-    franchises: franchises,
-    players: state.players
+    franchises: franchises
   };
+  if (includePlayers) {
+    payload.players = state.players;
+  }
   const eventString = `data: ${JSON.stringify(payload)}\n\n`;
   sseClients.forEach(client => {
     try {
@@ -334,300 +382,129 @@ app.use(express.json());
 let serverIsOffline = false;
 let lastOfflineCheck = 0;
 
-// Hand-curated mapping of player IDs to their real Cricbuzz Player IDs to deliver authentic high-quality official photos
-const REAL_CRICBUZZ_IDS: Record<string, number> = {
-  'virat-kohli': 1413,
-  'rohit-sharma': 576,
-  'ms-dhoni': 265,
-  'jasprit-bumrah': 9311,
-  'rishabh-pant': 10744,
-  'kl-rahul': 8733,
-  'hardik-pandya': 9630,
-  'shubman-gill': 11813,
-  'shreyas-iyer': 9428,
-  'suryakumar-yadav': 11803,
-  'sanju-samson': 8271,
-  'ravindra-jadeja': 587,
-  'yuzvendra-chahal': 7910,
-  'arshdeep-singh': 13217,
-  'mohammed-shami': 7909,
-  'mohammed-siraj': 10808,
-  'ishan-kishan': 10276,
-  'rinku-singh': 10892,
-  'axar-patel': 8808,
-  'yashasvi-jaiswal': 13548,
-  'tilak-varma': 14344,
-  'travis-head': 8497,
-  'pat-cummins': 7905,
-  'mitchell-starc': 7906,
-  'heinrich-klaasen': 8190,
-  'nicholas-pooran': 9158,
-  'glenn-maxwell': 1768,
-  'faf-du-plessis': 1842,
-  'sunil-narine': 2303,
-  'rashid-khan': 10726,
-  'devon-conway': 11802,
-  'quinton-de-kock': 8422,
-  'liam-livingstone': 10237,
-  'jos-buttler': 1847,
-  'david-warner': 1739,
-  'mitchell-marsh': 2161,
-  'marcus-stoinis': 8444,
-  'sam-curran': 11210,
-  'trent-boult': 1850,
-  'kagiso-rabada': 9581,
-  'jofra-archer': 10926,
-  'lockie-ferguson': 11075,
-  'josh-hazlewood': 7915,
-  'naveen-ul-haq': 10866,
-  'matheesha-pathirana': 15391,
-  'maheesh-theekshana': 14251,
-  'phil-salt': 10543,
-  'tim-david': 13054,
-  'dewald-brevis': 14798,
-  'tristan-stubbs': 14782,
-  'will-jacks': 13257,
-  'harshal-patel': 7912,
-  'harshit-rana': 14603,
-  'mayank-yadav': 14800,
-  'nitish-kumar-reddy': 13410,
-  'dhruv-jurel': 13444,
-  'sai-sudharsan': 14346,
-  'prabhsimran-singh': 13445,
-  'shashank-singh': 11151,
-  'ashutosh-sharma': 12258,
-  'venkatesh-iyer': 11111,
-  'shivam-dube': 11114,
-  'shreyas-gopal': 9421,
-  'deepak-chahar': 9848,
-  't-natarajan': 10893,
-  'sandeep-sharma': 7916,
-  'piyush-chawla': 534,
-  'bhuvneshwar-kumar': 1726,
-  'ajinkya-rahane': 1447,
-  'shikhar-dhawan': 1446,
-  'dinesh-karthik': 264,
-  'ravichandran-ashwin': 1593,
-  'krunal-pandya': 11307,
-  'devdutt-padikkal': 11815,
-  'manish-pandey': 1594,
-  'vijay-shankar': 8180,
-  'mohit-sharma': 7911,
-  'imran-tahir': 1607,
-  'kieron-pollard': 1658,
-  'dwayne-bravo': 1666,
-  'kane-williamson': 1854,
-  'steve-smith': 2250,
-  'wriddhiman-saha': 1450,
-  'abhishek-sharma': 12242,
-  'ayush-badoni': 13406,
-  'abdul-samad': 13192,
-  'aiden-markram': 9429,
-  'anrich-nortje': 10544,
-  'avesh-khan': 10264,
-  'nitish-rana': 10271,
-  'mukesh-kumar': 14197,
-  'khaleel-ahmed': 10277,
-  'kuldeep-yadav': 9423,
-  'prithvi-shaw': 11812,
-  'washington-sundar': 10894,
-  'rahul-chahar': 10895,
-  'rahul-tewatia': 9633,
-  'r-sai-kishore': 11112,
-  'varun-chakravarthy': 11113,
-  'shahrukh-khan': 11115,
-  'harpreet-brar': 11152,
-  'vaibhav-arora': 14604,
-  'suyash-sharma': 14912,
-  'nehal-wadhera': 14913,
-  'spencer-johnson': 14252,
-  'joshua-little': 11116,
-  'gerald-coetzee': 13411,
-  'nuwan-thushara': 14253,
-  'sameer-rizvi': 14347,
-  'kumar-kushagra': 14348,
-  'nandre-burger': 13412,
-  'kwena-maphaka': 15392,
-  'luke-wood': 10545,
-  'noor-ahmad': 14252,
-  'ramandeep-singh': 14350,
-  'rasikh-dar': 13446,
-  'angkrish-raghuvanshi': 15394
-};
+// Hand-curated mapping of player IDs to their real Cricbuzz Player IDs or direct photo URLs to deliver authentic high-quality official photos
+const REAL_CRICBUZZ_IDS: Record<string, number | string> = {};
 
 // API: Proxy Cricbuzz player photo to bypass browser hotlinking/CORS protection, with professional fallback badge generator
 app.get('/api/player-photo/:playerIdOrCricbuzzId', async (req, res) => {
   try {
     const { playerIdOrCricbuzzId } = req.params;
-    let cricbuzzId: number | null = null;
     let playerName = 'Cricket Player';
     let playerRole = 'Player';
     let playerCountry = 'India';
 
-    // First check if the playerIdOrCricbuzzId matches a hand-curated real ID
-    if (playerIdOrCricbuzzId && REAL_CRICBUZZ_IDS[playerIdOrCricbuzzId]) {
-      cricbuzzId = REAL_CRICBUZZ_IDS[playerIdOrCricbuzzId];
-    }
-
-    if (playerIdOrCricbuzzId && !isNaN(Number(playerIdOrCricbuzzId))) {
-      // If we are given a numeric ID directly
-      if (!cricbuzzId) {
-        cricbuzzId = Number(playerIdOrCricbuzzId);
-      }
-      // Try to find matching player in state to populate metadata for badge
-      const player = state.players.find(p => p.cricbuzzId === cricbuzzId || p.id === playerIdOrCricbuzzId);
+    if (playerIdOrCricbuzzId) {
+      // Try to find matching player in state to populate metadata for the initials badge
+      const isNumeric = !isNaN(Number(playerIdOrCricbuzzId));
+      const player = state.players.find(p => 
+        isNumeric 
+          ? (p.cricbuzzId === Number(playerIdOrCricbuzzId))
+          : (p.id === playerIdOrCricbuzzId || p.cricbuzzId === Number(playerIdOrCricbuzzId))
+      );
       if (player) {
-        playerName = player.name;
-        playerRole = player.role || 'Player';
-        playerCountry = player.country || 'India';
-      }
-    } else if (playerIdOrCricbuzzId) {
-      // Find player by ID string
-      const player = state.players.find(p => p.id === playerIdOrCricbuzzId);
-      if (player) {
-        if (!cricbuzzId) {
-          cricbuzzId = REAL_CRICBUZZ_IDS[player.id] || player.cricbuzzId || null;
-        }
         playerName = player.name;
         playerRole = player.role || 'Player';
         playerCountry = player.country || 'India';
       } else {
-        // Fallback initials if player not found
         playerName = playerIdOrCricbuzzId.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
       }
     }
 
-    // Helper to generate a beautiful, premium vector player badge SVG
-    const sendCustomBadge = () => {
-      // Get initials
-      const initials = playerName
-        .split(' ')
-        .map(n => n[0])
-        .slice(0, 2)
-        .join('')
-        .toUpperCase();
+    // Get initials
+    const initials = playerName
+      .split(' ')
+      .map(n => n[0])
+      .slice(0, 2)
+      .join('')
+      .toUpperCase();
 
-      // Determine colors based on player country/role to make them feel highly personalized and unique!
-      let primaryColor = '#f59e0b'; // Gold
-      let secondaryColor = '#10b981'; // Emerald
-      let bgGradientStart = '#0f172a'; // Deep Navy
-      let bgGradientEnd = '#020617'; // Rich Black
+    // Determine colors based on player country/role to make them feel highly personalized and unique!
+    let primaryColor = '#f59e0b'; // Gold
+    let secondaryColor = '#10b981'; // Emerald
+    let bgGradientStart = '#0f172a'; // Deep Navy
+    let bgGradientEnd = '#020617'; // Rich Black
 
-      if (playerCountry === 'India') {
-        primaryColor = '#3b82f6'; // Royal Blue
-        secondaryColor = '#f97316'; // Saffron
-      } else if (playerCountry === 'Australia') {
-        primaryColor = '#fbbf24'; // Canary Gold
-        secondaryColor = '#15803d'; // Forest Green
-      } else if (playerCountry === 'England') {
-        primaryColor = '#ef4444'; // Red
-        secondaryColor = '#1e3a8a'; // English Navy
-      } else if (playerCountry === 'South Africa') {
-        primaryColor = '#16a34a'; // Proteas Green
-        secondaryColor = '#fbbf24'; // Gold
-      } else if (playerCountry === 'West Indies') {
-        primaryColor = '#9d174d'; // Maroon
-        secondaryColor = '#f59e0b'; // Gold
-      } else if (playerCountry === 'Sri Lanka') {
-        primaryColor = '#2563eb'; // Lion Blue
-        secondaryColor = '#fbbf24'; // Yellow
-      } else if (playerCountry === 'Afghanistan') {
-        primaryColor = '#2563eb'; // Blue
-        secondaryColor = '#ef4444'; // Red
-      } else if (playerCountry === 'New Zealand') {
-        primaryColor = '#e2e8f0'; // Silver/White
-        secondaryColor = '#1e293b'; // Slate Black
-      }
-
-      const badgeSvg = `
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 150" width="150" height="150">
-          <defs>
-            <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="${bgGradientStart}" />
-              <stop offset="100%" stop-color="${bgGradientEnd}" />
-            </linearGradient>
-            <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="${primaryColor}" stop-opacity="0.15" />
-              <stop offset="100%" stop-color="${bgGradientEnd}" stop-opacity="0" />
-            </radialGradient>
-          </defs>
-          
-          <!-- Background -->
-          <rect width="150" height="150" rx="20" fill="url(#bgGrad)" />
-          <circle cx="75" cy="75" r="60" fill="url(#glow)" />
-          
-          <!-- Decorative concentric circular frames -->
-          <circle cx="75" cy="75" r="50" fill="none" stroke="${primaryColor}" stroke-opacity="0.1" stroke-width="6" />
-          <circle cx="75" cy="75" r="48" fill="none" stroke="${primaryColor}" stroke-opacity="0.3" stroke-width="1.5" />
-          <circle cx="75" cy="75" r="42" fill="none" stroke="${secondaryColor}" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="4 2" />
-          
-          <!-- Player Initials in stylized, super high-contrast Display typography -->
-          <text x="75" y="82" font-family="'Inter', system-ui, sans-serif" font-size="34" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="-1.5">
-            ${initials}
-          </text>
-          
-          <!-- Miniature Player Jersey illustration at bottom of circle -->
-          <path d="M 60,115 L 90,115 L 85,100 L 65,100 Z" fill="${primaryColor}" opacity="0.3" />
-          
-          <!-- Country Badge & Role label -->
-          <rect x="25" y="112" width="100" height="14" rx="4" fill="${bgGradientStart}" stroke="${primaryColor}" stroke-width="1" />
-          <text x="75" y="122" font-family="'JetBrains Mono', monospace" font-size="8" font-weight="bold" fill="${primaryColor}" text-anchor="middle" letter-spacing="1">
-            ${playerRole.toUpperCase()}
-          </text>
-
-          <!-- Top golden stars/crest representing premium/verified status -->
-          <g transform="translate(63, 16) scale(0.5)">
-            <path d="M 12,2 L 15,9 L 22,9 L 17,14 L 19,21 L 12,17 L 5,21 L 7,14 L 2,9 L 9,9 Z" fill="${primaryColor}" />
-          </g>
-          <g transform="translate(75, 12) scale(0.6)">
-            <path d="M 12,2 L 15,9 L 22,9 L 17,14 L 19,21 L 12,17 L 5,21 L 7,14 L 2,9 L 9,9 Z" fill="${secondaryColor}" />
-          </g>
-          <g transform="translate(87, 16) scale(0.5)">
-            <path d="M 12,2 L 15,9 L 22,9 L 17,14 L 19,21 L 12,17 L 5,21 L 7,14 L 2,9 L 9,9 Z" fill="${primaryColor}" />
-          </g>
-        </svg>
-      `;
-
-      res.setHeader('Content-Type', 'image/svg+xml');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      return res.send(badgeSvg);
-    };
-
-    // Check if the badge fallback is forced
-    const isBadgeForced = req.query.badge === 'true' || req.query.fallback === 'true';
-
-    if (isBadgeForced) {
-      return sendCustomBadge();
+    if (playerCountry === 'India') {
+      primaryColor = '#3b82f6'; // Royal Blue
+      secondaryColor = '#f97316'; // Saffron
+    } else if (playerCountry === 'Australia') {
+      primaryColor = '#fbbf24'; // Canary Gold
+      secondaryColor = '#15803d'; // Forest Green
+    } else if (playerCountry === 'England') {
+      primaryColor = '#ef4444'; // Red
+      secondaryColor = '#1e3a8a'; // English Navy
+    } else if (playerCountry === 'South Africa') {
+      primaryColor = '#16a34a'; // Proteas Green
+      secondaryColor = '#fbbf24'; // Gold
+    } else if (playerCountry === 'West Indies') {
+      primaryColor = '#9d174d'; // Maroon
+      secondaryColor = '#f59e0b'; // Gold
+    } else if (playerCountry === 'Sri Lanka') {
+      primaryColor = '#2563eb'; // Lion Blue
+      secondaryColor = '#fbbf24'; // Yellow
+    } else if (playerCountry === 'Afghanistan') {
+      primaryColor = '#2563eb'; // Blue
+      secondaryColor = '#ef4444'; // Red
+    } else if (playerCountry === 'New Zealand') {
+      primaryColor = '#e2e8f0'; // Silver/White
+      secondaryColor = '#1e293b'; // Slate Black
     }
 
-    if (cricbuzzId) {
-      // Fetch the photo server-side through a high-performance proxy.
-      // This completely avoids any CORS, sandbox iframe limitations, or browser redirect security policies.
-      const cricbuzzUrl = `https://www.cricbuzz.com/a/img/v1/150x150/i1/c${cricbuzzId}/player.jpg`;
-      const proxiedUrl = `https://images.weserv.nl/?url=${encodeURIComponent(cricbuzzUrl)}`;
-      
-      try {
-        const fetchResponse = await fetch(proxiedUrl, { signal: AbortSignal.timeout(4000) });
-        if (fetchResponse.ok) {
-          const buffer = await fetchResponse.arrayBuffer();
-          const contentType = fetchResponse.headers.get('content-type') || 'image/jpeg';
-          res.setHeader('Content-Type', contentType);
-          res.setHeader('Cache-Control', 'public, max-age=86400');
-          return res.send(Buffer.from(buffer));
-        } else {
-          console.warn(`Proxy fetch failed with status ${fetchResponse.status} for player ID ${playerIdOrCricbuzzId} (cricbuzz ID ${cricbuzzId})`);
-        }
-      } catch (fetchErr) {
-        console.error(`Error server-side fetching photo for ${playerIdOrCricbuzzId}:`, fetchErr);
-      }
-    }
+    const badgeSvg = `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 150" width="150" height="150">
+        <defs>
+          <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="${bgGradientStart}" />
+            <stop offset="100%" stop-color="${bgGradientEnd}" />
+          </linearGradient>
+          <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="${primaryColor}" stop-opacity="0.15" />
+            <stop offset="100%" stop-color="${bgGradientEnd}" stop-opacity="0" />
+          </radialGradient>
+        </defs>
+        
+        <!-- Background -->
+        <rect width="150" height="150" rx="20" fill="url(#bgGrad)" />
+        <circle cx="75" cy="75" r="60" fill="url(#glow)" />
+        
+        <!-- Decorative concentric circular frames -->
+        <circle cx="75" cy="75" r="50" fill="none" stroke="${primaryColor}" stroke-opacity="0.1" stroke-width="6" />
+        <circle cx="75" cy="75" r="48" fill="none" stroke="${primaryColor}" stroke-opacity="0.3" stroke-width="1.5" />
+        <circle cx="75" cy="75" r="42" fill="none" stroke="${secondaryColor}" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="4 2" />
+        
+        <!-- Player Initials in stylized, super high-contrast Display typography -->
+        <text x="75" y="82" font-family="'Inter', system-ui, sans-serif" font-size="34" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="-1.5">
+          ${initials}
+        </text>
+        
+        <!-- Miniature Player Jersey illustration at bottom of circle -->
+        <path d="M 60,115 L 90,115 L 85,100 L 65,100 Z" fill="${primaryColor}" opacity="0.3" />
+        
+        <!-- Country Badge & Role label -->
+        <rect x="25" y="112" width="100" height="14" rx="4" fill="${bgGradientStart}" stroke="${primaryColor}" stroke-width="1" />
+        <text x="75" y="122" font-family="'JetBrains Mono', monospace" font-size="8" font-weight="bold" fill="${primaryColor}" text-anchor="middle" letter-spacing="1">
+          ${playerRole.toUpperCase()}
+        </text>
 
-    // Otherwise, generate the premium player badge!
-    return sendCustomBadge();
+        <!-- Top golden stars/crest representing premium/verified status -->
+        <g transform="translate(63, 16) scale(0.5)">
+          <path d="M 12,2 L 15,9 L 22,9 L 17,14 L 19,21 L 12,17 L 5,21 L 7,14 L 2,9 L 9,9 Z" fill="${primaryColor}" />
+        </g>
+        <g transform="translate(75, 12) scale(0.6)">
+          <path d="M 12,2 L 15,9 L 22,9 L 17,14 L 19,21 L 12,17 L 5,21 L 7,14 L 2,9 L 9,9 Z" fill="${secondaryColor}" />
+        </g>
+        <g transform="translate(87, 16) scale(0.5)">
+          <path d="M 12,2 L 15,9 L 22,9 L 17,14 L 19,21 L 12,17 L 5,21 L 7,14 L 2,9 L 9,9 Z" fill="${primaryColor}" />
+        </g>
+      </svg>
+    `;
+
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(badgeSvg);
 
   } catch (err) {
-    console.error('Error proxying player image:', err);
-    // Ultimate fallback is always a dynamic initials badge
+    console.error('Error generating player badge:', err);
     const playerName = req.params.playerIdOrCricbuzzId ? req.params.playerIdOrCricbuzzId.split('-').join(' ') : 'Cricket Player';
     const initials = playerName.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
     const fallbackSvg = `
@@ -653,6 +530,8 @@ app.get('/api/auction/state', (req, res) => {
 
 // API: SSE Stream
 app.get('/api/auction/stream', (req, res) => {
+  const userId = req.query.userId as string;
+
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -661,7 +540,11 @@ app.get('/api/auction/stream', (req, res) => {
   });
   res.write('\n');
 
-  sseClients.push(res);
+  if (userId && state.auction.activeUsers[userId]) {
+    state.auction.activeUsers[userId].lastSeen = new Date().toISOString();
+  }
+
+  sseClients.push({ res, userId });
 
   // Send initial state immediately
   const payload = {
@@ -682,15 +565,56 @@ app.get('/api/auction/stream', (req, res) => {
 
   req.on('close', () => {
     clearInterval(heartbeat);
-    sseClients = sseClients.filter(c => c !== res);
+    sseClients = sseClients.filter(c => c.res !== res);
+
+    if (userId) {
+      const user = state.auction.activeUsers[userId];
+      if (user) {
+        const username = user.username;
+        const role = user.role;
+        const prevFranchise = user.franchise;
+
+        // Remove user from activeUsers
+        delete state.auction.activeUsers[userId];
+        addLog('leave', `${username || 'Someone'} (${role === 'franchise_owner' ? 'Franchise Owner' : role}) disconnected.`);
+
+        // Release their team and log if they were a franchise owner
+        if (prevFranchise) {
+          addLog('status', `Team ${prevFranchise} is now available again as ${username} disconnected.`);
+        }
+
+        // If Auctioneer disconnected, pause active bidding
+        if (role === 'auctioneer') {
+          if (state.auction.status === 'active') {
+            state.auction.status = 'paused';
+            if (timerInterval) {
+              clearInterval(timerInterval);
+              timerInterval = null;
+            }
+            addLog('status', 'Bidding paused automatically because the Auctioneer disconnected.');
+          }
+        }
+
+        saveState();
+        broadcastState();
+      }
+    }
   });
 });
 
 // API: Join Room
 app.post('/api/auction/join', (req, res) => {
-  const { role, username, passcode } = req.body;
+  const { role, username, passcode, roomCode } = req.body;
   if (!role) {
     return res.status(400).json({ error: 'Role is required' });
+  }
+  if (!username || !username.trim()) {
+    return res.status(400).json({ error: 'Player Name is required' });
+  }
+
+  // Validate Room Code
+  if (state.auction.roomCode && roomCode && roomCode.toUpperCase() !== state.auction.roomCode.toUpperCase()) {
+    return res.status(404).json({ error: 'Invalid Room Code. Please make sure the room exists.' });
   }
 
   // Check if room has ended
@@ -707,16 +631,106 @@ app.post('/api/auction/join', (req, res) => {
 
   const userId = Math.random().toString(36).substring(2, 11);
   state.auction.activeUsers[userId] = {
+    userId,
+    username: username.trim(),
     role,
+    franchise: null,
+    isReady: false,
     lastSeen: new Date().toISOString()
   };
 
-  const displayName = role === 'auctioneer' ? 'Auctioneer (Admin)' : role;
-  addLog('join', `${username || 'Someone'} joined the session as ${displayName}.`);
+  const displayName = role === 'auctioneer' ? 'Auctioneer (Admin)' : role === 'spectator' ? 'Spectator' : 'Franchise Owner';
+  addLog('join', `${username.trim()} joined the lobby as ${displayName}.`);
   saveState();
   broadcastState();
 
   res.json({ userId, role, status: 'success' });
+});
+
+// API: Team Selection Locking in Lobby
+app.post('/api/auction/select-team', (req, res) => {
+  const { userId, franchise } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+
+  const user = state.auction.activeUsers[userId];
+  if (!user) {
+    return res.status(404).json({ error: 'User session not found' });
+  }
+
+  if (franchise) {
+    // Check if team is already selected by another user
+    const alreadyTaken = Object.values(state.auction.activeUsers).find(
+      u => u.userId !== userId && u.franchise === franchise
+    );
+    if (alreadyTaken) {
+      return res.status(400).json({ error: `${franchise} is already selected by ${alreadyTaken.username}.` });
+    }
+
+    const prevFranchise = user.franchise;
+    user.franchise = franchise;
+    addLog('status', `${user.username} selected ${franchise} as their IPL team.`);
+    if (prevFranchise) {
+      addLog('status', `Team ${prevFranchise} released by ${user.username}.`);
+    }
+  } else {
+    // Release previous franchise
+    const prevFranchise = user.franchise;
+    user.franchise = null;
+    if (prevFranchise) {
+      addLog('status', `${user.username} released ${prevFranchise}.`);
+    }
+  }
+
+  saveState();
+  broadcastState();
+  res.json({ success: true, activeUsers: state.auction.activeUsers });
+});
+
+// API: Player Ready Status
+app.post('/api/auction/ready', (req, res) => {
+  const { userId, isReady } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+
+  const user = state.auction.activeUsers[userId];
+  if (!user) {
+    return res.status(404).json({ error: 'User session not found' });
+  }
+
+  user.isReady = !!isReady;
+  addLog('status', `${user.username} is now ${user.isReady ? 'READY' : 'WAITING'}.`);
+
+  saveState();
+  broadcastState();
+  res.json({ success: true, activeUsers: state.auction.activeUsers });
+});
+
+// API: Leave Room / Lobby
+app.post('/api/auction/leave', (req, res) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+
+  const user = state.auction.activeUsers[userId];
+  if (user) {
+    const username = user.username;
+    const prevFranchise = user.franchise;
+    delete state.auction.activeUsers[userId];
+
+    addLog('leave', `${username} left the room.`);
+    if (prevFranchise) {
+      addLog('status', `Team ${prevFranchise} is available again.`);
+    }
+
+    saveState();
+    broadcastState();
+  }
+
+  res.json({ success: true });
 });
 
 // API: Team Owner Bidding
@@ -816,7 +830,10 @@ function generateServerPasscode(): string {
 
 // API: Auctioneer Actions (Admin Panels)
 app.post('/api/auction/admin/action', async (req, res) => {
-  const { action, playerId, customIncrement, category, isPrivate, passcode } = req.body;
+  const { 
+    action, playerId, customIncrement, category, isPrivate, passcode,
+    roomName, playerPoolSize, budgetCrores, numTeams, auctionMode
+  } = req.body;
 
   if (action === 'start') {
     if (!playerId) {
@@ -906,20 +923,25 @@ app.post('/api/auction/admin/action', async (req, res) => {
     }
   } 
   else if (action === 'create_room') {
-    const selectedCategory = category || req.body.category;
     const selectedIsPrivate = isPrivate !== undefined ? !!isPrivate : !!req.body.isPrivate;
-    // Automatically generate passcode if isPrivate is requested
     const finalPasscode = selectedIsPrivate ? (passcode || req.body.passcode || generateServerPasscode()) : '';
+    const finalRoomCode = generateServerPasscode(); // generate unique 6-character room code
 
-    if (!selectedCategory || !['category1', 'category2', 'category3'].includes(selectedCategory)) {
-      return res.status(400).json({ error: 'Invalid room category selected.' });
+    const finalRoomName = roomName || req.body.roomName || 'IPL Live Auction';
+    const finalPlayerPoolSize = playerPoolSize || req.body.playerPoolSize || 'full';
+    const finalNumTeams = Number(numTeams || req.body.numTeams || 10);
+    const finalAuctionMode = auctionMode || req.body.auctionMode || 'Normal';
+    const finalBudgetCrores = Number(budgetCrores || req.body.budgetCrores || 150);
+    const finalPurseLakhs = finalBudgetCrores * 100;
+
+    let pool = [...playersData];
+    if (finalPlayerPoolSize === '15') {
+      pool = pool.slice(0, 15);
+    } else if (finalPlayerPoolSize === '20') {
+      pool = pool.slice(0, 20);
+    } else if (finalPlayerPoolSize === '25') {
+      pool = pool.slice(0, 25);
     }
-
-    const catDetails = {
-      category1: { maxSquadSize: 25, totalPurseLakhs: 15000 },
-      category2: { maxSquadSize: 20, totalPurseLakhs: 13500 },
-      category3: { maxSquadSize: 15, totalPurseLakhs: 12000 }
-    }[selectedCategory as 'category1' | 'category2' | 'category3'];
 
     state.auction = {
       status: 'idle',
@@ -932,35 +954,42 @@ app.post('/api/auction/admin/action', async (req, res) => {
         {
           id: 'create-room-log',
           type: 'status',
-          message: `Auction room recreated with ${selectedCategory === 'category1' ? 'Category 1' : selectedCategory === 'category2' ? 'Category 2' : 'Category 3'} rules: Squad Size = ${catDetails.maxSquadSize} Players, Purse = ₹${catDetails.totalPurseLakhs / 100} Crore. Room is ${selectedIsPrivate ? 'Private' : 'Public'}.`,
+          message: `Auction room '${finalRoomName}' created. Room Code: ${finalRoomCode}.`,
           timestamp: new Date().toISOString()
         }
       ],
       soldPlayers: {},
       unsoldPlayerIds: [],
-      activeUsers: {},
-      roomCategory: selectedCategory as any,
-      maxSquadSize: catDetails.maxSquadSize,
-      totalPurseLakhs: catDetails.totalPurseLakhs,
+      activeUsers: {}, // clear all user sessions on room creation
+      roomCategory: 'category1',
+      maxSquadSize: 25,
+      totalPurseLakhs: finalPurseLakhs,
       isPrivate: selectedIsPrivate,
       passcode: finalPasscode,
-      isEnded: false
+      isEnded: false,
+      roomName: finalRoomName,
+      roomCode: finalRoomCode,
+      playerPoolSize: finalPlayerPoolSize,
+      numTeams: finalNumTeams,
+      auctionMode: finalAuctionMode,
+      lobbyStatus: 'waiting'
     };
     
-    state.players = JSON.parse(JSON.stringify(playersData)); // Deep copy clone of fresh player list
+    state.players = pool;
     
     // Reinitialize franchises with this specific category's purse & squad size
     const updatedFranchises: Record<string, Franchise> = {};
-    Object.keys(defaultFranchises).forEach(key => {
+    const teamKeys = Object.keys(defaultFranchises).slice(0, finalNumTeams);
+    teamKeys.forEach(key => {
       const defF = defaultFranchises[key];
       updatedFranchises[key] = {
         ...defF,
-        startingPurseLakhs: catDetails.totalPurseLakhs,
-        remainingPurseLakhs: catDetails.totalPurseLakhs,
+        startingPurseLakhs: finalPurseLakhs,
+        remainingPurseLakhs: finalPurseLakhs,
         playersBoughtIds: [],
         overseasCount: 0,
         indianCount: 0,
-        remainingSlots: catDetails.maxSquadSize,
+        remainingSlots: 25,
         starting11PlayerIds: []
       };
     });
@@ -970,7 +999,13 @@ app.post('/api/auction/admin/action', async (req, res) => {
       clearInterval(timerInterval);
       timerInterval = null;
     }
-    addLog('status', `Auction room initialized as ${selectedCategory === 'category1' ? 'Category 1' : selectedCategory === 'category2' ? 'Category 2' : 'Category 3'}. Every team has been assigned ₹${catDetails.totalPurseLakhs / 100} Crore purse, max squad limit of ${catDetails.maxSquadSize}, and visibility is set to ${selectedIsPrivate ? 'Private' : 'Public'}.`);
+    addLog('status', `Auction room initialized. Code: ${finalRoomCode}. visibility: ${selectedIsPrivate ? 'Private' : 'Public'}.`);
+  }
+  else if (action === 'start_auction') {
+    state.auction.lobbyStatus = 'active';
+    addLog('status', 'The Auctioneer has started the auction. Good luck to all franchises!');
+    saveState();
+    broadcastState();
   }
   else if (action === 'end_room') {
     state.auction.isEnded = true;
@@ -988,12 +1023,23 @@ app.post('/api/auction/admin/action', async (req, res) => {
   }
   else if (action === 'reset') {
     // Hard reset of entire state preserving current room rules
-    const currentCategory = state.auction.roomCategory || 'category1';
-    const currentMaxSquadSize = state.auction.maxSquadSize || 25;
-    const currentTotalPurseLakhs = state.auction.totalPurseLakhs || 15000;
+    const currentRoomName = state.auction.roomName || 'IPL Live Auction';
+    const currentRoomCode = state.auction.roomCode || '';
+    const currentPlayerPoolSize = state.auction.playerPoolSize || 'full';
+    const currentNumTeams = state.auction.numTeams || 10;
+    const currentAuctionMode = state.auction.auctionMode || 'Normal';
     const currentIsPrivate = state.auction.isPrivate || false;
-    // Always generate a fresh secure passcode on reset if it's private to satisfy "generate each and every time, every unique code"
-    const currentPasscode = currentIsPrivate ? generateServerPasscode() : '';
+    const currentPasscode = state.auction.passcode || '';
+    const currentTotalPurseLakhs = state.auction.totalPurseLakhs || 15000;
+
+    let pool = [...playersData];
+    if (currentPlayerPoolSize === '15') {
+      pool = pool.slice(0, 15);
+    } else if (currentPlayerPoolSize === '20') {
+      pool = pool.slice(0, 20);
+    } else if (currentPlayerPoolSize === '25') {
+      pool = pool.slice(0, 25);
+    }
 
     state.auction = {
       status: 'idle',
@@ -1013,18 +1059,25 @@ app.post('/api/auction/admin/action', async (req, res) => {
       soldPlayers: {},
       unsoldPlayerIds: [],
       activeUsers: {},
-      roomCategory: currentCategory as any,
-      maxSquadSize: currentMaxSquadSize,
+      roomCategory: 'category1',
+      maxSquadSize: 25,
       totalPurseLakhs: currentTotalPurseLakhs,
       isPrivate: currentIsPrivate,
       passcode: currentPasscode,
-      isEnded: false
+      isEnded: false,
+      roomName: currentRoomName,
+      roomCode: currentRoomCode,
+      playerPoolSize: currentPlayerPoolSize,
+      numTeams: currentNumTeams,
+      auctionMode: currentAuctionMode,
+      lobbyStatus: 'waiting'
     };
-    state.players = JSON.parse(JSON.stringify(playersData)); // Deep copy clone of fresh player list
+    state.players = pool;
     
     // Reinitialize franchises with this specific category's purse & squad size
     const updatedFranchises: Record<string, Franchise> = {};
-    Object.keys(defaultFranchises).forEach(key => {
+    const teamKeys = Object.keys(defaultFranchises).slice(0, currentNumTeams);
+    teamKeys.forEach(key => {
       const defF = defaultFranchises[key];
       updatedFranchises[key] = {
         ...defF,
@@ -1033,7 +1086,7 @@ app.post('/api/auction/admin/action', async (req, res) => {
         playersBoughtIds: [],
         overseasCount: 0,
         indianCount: 0,
-        remainingSlots: currentMaxSquadSize,
+        remainingSlots: 25,
         starting11PlayerIds: []
       };
     });
@@ -1046,8 +1099,9 @@ app.post('/api/auction/admin/action', async (req, res) => {
     addLog('status', 'Auctioneer has reset the IPL Auction room. All budgets and rosters are restored.');
   }
 
+  const shouldBroadcastPlayers = ['reset', 'create_room'].includes(action);
   saveState();
-  broadcastState();
+  broadcastState(shouldBroadcastPlayers);
   res.json({ success: true, state: state.auction, franchises });
 });
 
@@ -1084,7 +1138,7 @@ app.post('/api/players/add', (req, res) => {
   state.players.push(newPlayer);
   addLog('status', `New custom player added to master list: ${name} (₹${formatPrice(Number(basePriceLakhs))} Base).`);
   saveState();
-  broadcastState();
+  broadcastState(true);
 
   res.json({ success: true, player: newPlayer });
 });
@@ -1112,6 +1166,15 @@ app.post('/api/franchises/:franchiseName/starting11', (req, res) => {
 
   if (starting11PlayerIds.length > 11) {
     return res.status(400).json({ error: 'Starting XI cannot exceed 11 players' });
+  }
+
+  // Validate max 4 overseas players in Starting XI
+  const starting11Players = starting11PlayerIds
+    .map(id => state.players.find(p => p.id === id))
+    .filter(Boolean) as Player[];
+  const overseasCount = starting11Players.filter(p => p.countryType === PlayerCountryType.Overseas).length;
+  if (overseasCount > 4) {
+    return res.status(400).json({ error: 'Starting XI cannot contain more than 4 overseas players' });
   }
 
   team.starting11PlayerIds = starting11PlayerIds;
