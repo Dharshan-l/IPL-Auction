@@ -621,11 +621,18 @@ app.post('/api/auction/join', (req, res) => {
   if (state.auction.isEnded && role !== 'auctioneer') {
     return res.status(403).json({ error: 'This Auction Room has been ended by the Auctioneer.' });
   }
-
   // Check passcode if private room
   if (state.auction.isPrivate && state.auction.passcode && role !== 'auctioneer') {
     if (passcode !== state.auction.passcode) {
       return res.status(401).json({ error: 'Incorrect passcode for this private Auction Room' });
+    }
+  }
+
+  // Check room ownership limit for franchise owners
+  if (role === 'franchise_owner') {
+    const claimedCount = Object.values(state.auction.activeUsers).filter(u => !!u.franchise).length;
+    if (claimedCount >= (state.auction.numTeams || 10)) {
+      return res.status(403).json({ error: `The room limit of ${state.auction.numTeams} active franchises has been reached.` });
     }
   }
 
@@ -666,6 +673,14 @@ app.post('/api/auction/select-team', (req, res) => {
     );
     if (alreadyTaken) {
       return res.status(400).json({ error: `${franchise} is already selected by ${alreadyTaken.username}.` });
+    }
+
+    // Check if the room limit of claimed teams is already reached
+    const claimedTeams = Object.values(state.auction.activeUsers)
+      .filter(u => u.userId !== userId && !!u.franchise);
+    
+    if (claimedTeams.length >= (state.auction.numTeams || 10)) {
+      return res.status(400).json({ error: `Room limit of ${state.auction.numTeams} active franchises has been reached.` });
     }
 
     const prevFranchise = user.franchise;
@@ -979,7 +994,7 @@ app.post('/api/auction/admin/action', async (req, res) => {
     
     // Reinitialize franchises with this specific category's purse & squad size
     const updatedFranchises: Record<string, Franchise> = {};
-    const teamKeys = Object.keys(defaultFranchises).slice(0, finalNumTeams);
+    const teamKeys = Object.keys(defaultFranchises);
     teamKeys.forEach(key => {
       const defF = defaultFranchises[key];
       updatedFranchises[key] = {
@@ -1076,7 +1091,7 @@ app.post('/api/auction/admin/action', async (req, res) => {
     
     // Reinitialize franchises with this specific category's purse & squad size
     const updatedFranchises: Record<string, Franchise> = {};
-    const teamKeys = Object.keys(defaultFranchises).slice(0, currentNumTeams);
+    const teamKeys = Object.keys(defaultFranchises);
     teamKeys.forEach(key => {
       const defF = defaultFranchises[key];
       updatedFranchises[key] = {

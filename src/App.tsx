@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Trophy, Shield, Users, Award, TrendingUp, DollarSign, HelpCircle, 
-  Activity, Landmark, ShieldCheck, Play, Pause, ChevronRight, Gavel, 
+  Activity, Landmark, ShieldCheck, Play, Pause, ChevronLeft, ChevronRight, Gavel, 
   Sparkles, RefreshCw, LogOut, Check, ArrowRight, UserCheck, AlertTriangle, 
   Wifi, WifiOff, Search, Plus, X, Copy, Link, Lock, Unlock
 } from 'lucide-react';
@@ -19,7 +19,16 @@ export default function App() {
 
   // Client-side SPA routing state
   const [currentScreen, setCurrentScreen] = useState<'home' | 'create_room' | 'join_room' | 'lobby' | 'auction'>('home');
+  const [cameFromScreen, setCameFromScreen] = useState<'create_room' | 'join_room' | null>(null);
+  const [showLeaveConfirmation, setShowLeaveConfirmation] = useState(false);
   const [preFilledRoomCode, setPreFilledRoomCode] = useState('');
+
+  const navigateTo = (screen: 'home' | 'create_room' | 'join_room' | 'lobby' | 'auction', pushHistory = true) => {
+    setCurrentScreen(screen);
+    if (pushHistory) {
+      window.history.pushState({ screen }, '', `#${screen}`);
+    }
+  };
 
   // Copy indicator animations
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
@@ -146,7 +155,7 @@ export default function App() {
     const parts = window.location.pathname.split('/');
     if (parts[1] === 'join' && parts[2]) {
       setPreFilledRoomCode(parts[2].toUpperCase());
-      setCurrentScreen('join_room');
+      navigateTo('join_room');
     }
   }, []);
 
@@ -156,17 +165,62 @@ export default function App() {
     localStorage.removeItem('ipl_userRole');
   }, []);
 
+  // Browser History and Accidental Exit Confirmation
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      const isAuctionActive = currentScreen === 'auction' && auctionState.lobbyStatus === 'active' && !auctionState.isEnded;
+      if (isAuctionActive) {
+        // Intercept browser back/forward buttons and push state back
+        window.history.pushState({ screen: 'auction' }, '', '#auction');
+        setShowLeaveConfirmation(true);
+        return;
+      }
+
+      if (event.state && event.state.screen) {
+        setCurrentScreen(event.state.screen);
+      } else {
+        const hash = window.location.hash.replace('#', '');
+        if (['create_room', 'join_room', 'lobby', 'auction'].includes(hash)) {
+          setCurrentScreen(hash as any);
+        } else {
+          setCurrentScreen('home');
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [currentScreen, auctionState.lobbyStatus, auctionState.isEnded]);
+
+  // Prevent browser close / tab reload during active auction
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const isAuctionActive = currentScreen === 'auction' && auctionState.lobbyStatus === 'active' && !auctionState.isEnded;
+      if (isAuctionActive) {
+        e.preventDefault();
+        e.returnValue = 'The auction is in progress. Are you sure you want to leave?';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [currentScreen, auctionState.lobbyStatus, auctionState.isEnded]);
+
   // Transition logged in users between lobby & bidding war depending on room status
   useEffect(() => {
     if (userId && userRole) {
       if (auctionState.lobbyStatus === 'active') {
-        setCurrentScreen('auction');
+        navigateTo('auction');
       } else {
-        setCurrentScreen('lobby');
+        navigateTo('lobby');
       }
     } else {
       if (currentScreen === 'lobby' || currentScreen === 'auction') {
-        setCurrentScreen('home');
+        navigateTo('home');
       }
     }
   }, [userId, userRole, auctionState.lobbyStatus]);
@@ -316,7 +370,7 @@ export default function App() {
   };
 
   // Handle Log out / Leaving the Room
-  const handleLogout = async () => {
+  const handleLogout = async (targetScreen: 'home' | 'create_room' | 'join_room' = 'home') => {
     if (userId) {
       try {
         await fetch('/api/auction/leave', {
@@ -332,7 +386,7 @@ export default function App() {
     localStorage.removeItem('ipl_userRole');
     setUserId(null);
     setUserRole(null);
-    setCurrentScreen('home');
+    navigateTo(targetScreen);
     setActiveTab('auction');
   };
 
@@ -521,6 +575,22 @@ export default function App() {
     return Object.values(auctionState.activeUsers || {}).some(u => u.role === 'auctioneer');
   }, [auctionState.activeUsers]);
 
+  const participatingFranchises = useMemo(() => {
+    const claimedFranchiseNames = Object.values(auctionState.activeUsers || {})
+      .filter(u => u.role === 'franchise_owner' && !!u.franchise)
+      .map(u => u.franchise);
+    
+    const filtered: Record<string, Franchise> = {};
+    Object.keys(franchises).forEach(key => {
+      if (claimedFranchiseNames.includes(key)) {
+        filtered[key] = franchises[key];
+      }
+    });
+    return filtered;
+  }, [franchises, auctionState.activeUsers]);
+
+  const activeTeamsCount = Object.keys(participatingFranchises).length;
+
   // Unbid players list (for Auctioneer panel release)
   const unbidPlayers = useMemo(() => {
     return players.filter(p => 
@@ -628,11 +698,10 @@ export default function App() {
                 {apiError}
               </div>
             )}
-
             <button
               onClick={() => {
                 setApiError(null);
-                setCurrentScreen('create_room');
+                navigateTo('create_room');
               }}
               className="w-full flex items-center justify-between p-4 rounded-2xl border bg-slate-950 border-slate-850 text-slate-200 hover:border-amber-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
             >
@@ -647,11 +716,11 @@ export default function App() {
               </div>
               <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-500 transition-colors" />
             </button>
-
+ 
             <button
               onClick={() => {
                 setApiError(null);
-                setCurrentScreen('join_room');
+                navigateTo('join_room');
               }}
               className="w-full flex items-center justify-between p-4 rounded-2xl border bg-slate-950 border-slate-850 text-slate-200 hover:border-amber-500 hover:text-white transition-all hover:scale-102 cursor-pointer shadow-md group"
             >
@@ -713,7 +782,23 @@ export default function App() {
 
     if (generatedRoomCode) {
       return (
-        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative">
+          
+          {/* Back Button */}
+          <div className="absolute top-6 left-6">
+            <button 
+              type="button"
+              onClick={() => {
+                setGeneratedRoomCode('');
+                setGeneratedPasscode('');
+              }}
+              className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
+          </div>
+
           <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
             
@@ -783,7 +868,20 @@ export default function App() {
     }
 
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative">
+        
+        {/* Back Button */}
+        <div className="absolute top-6 left-6">
+          <button 
+            type="button"
+            onClick={() => navigateTo('home')}
+            className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            <span>Back</span>
+          </button>
+        </div>
+
         <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
           
@@ -1007,7 +1105,20 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 relative">
+        
+        {/* Back Button */}
+        <div className="absolute top-6 left-6">
+          <button 
+            type="button"
+            onClick={() => navigateTo('home')}
+            className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer shadow-md"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            <span>Back</span>
+          </button>
+        </div>
+
         <div className="max-w-md w-full space-y-6 bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl shadow-2xl relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500" />
           
@@ -1157,7 +1268,7 @@ export default function App() {
       { name: 'PBKS', fullName: 'Punjab Kings', color: '#D71920', textColor: '#FFFFFF' },
       { name: 'LSG', fullName: 'Lucknow Super Giants', color: '#0057B8', textColor: '#FFD700' },
       { name: 'DC', fullName: 'Delhi Capitals', color: '#000080', textColor: '#FF4500' }
-    ].slice(0, maxTeamsCount);
+    ];
 
     // Enforce condition for Auctioneer to start:
     // - There is at least 1 Franchise Owner
@@ -1181,18 +1292,28 @@ export default function App() {
         
         {/* Lobby Header */}
         <header className="bg-slate-900 border-b border-slate-800 py-4 px-6 flex justify-between items-center sticky top-0 z-50">
-          <div className="flex items-center space-x-3">
-            <div className="bg-amber-500/10 p-2 rounded-xl text-yellow-400 border border-yellow-500/20">
-              <Landmark className="w-5 h-5 animate-pulse" />
-            </div>
-            <div>
-              <h1 className="text-base font-extrabold text-white tracking-tight uppercase font-display flex items-center gap-2">
-                <span>{auctionState.roomName}</span>
-                <span className="text-[9px] bg-amber-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20">
-                  {auctionState.isPrivate ? '🔑 PRIVATE LOBBY' : '🌍 PUBLIC LOBBY'}
-                </span>
-              </h1>
-              <p className="text-[10px] text-slate-400 font-mono">Waiting Lobby System</p>
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => handleLogout(cameFromScreen || 'home')}
+              className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-850 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-750 transition-all cursor-pointer"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>Back</span>
+            </button>
+
+            <div className="flex items-center space-x-3 border-l border-slate-850 pl-4">
+              <div className="bg-amber-500/10 p-2 rounded-xl text-yellow-400 border border-yellow-500/20">
+                <Landmark className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <h1 className="text-base font-extrabold text-white tracking-tight uppercase font-display flex items-center gap-2">
+                  <span>{auctionState.roomName}</span>
+                  <span className="text-[9px] bg-amber-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20">
+                    {auctionState.isPrivate ? '🔑 PRIVATE LOBBY' : '🌍 PUBLIC LOBBY'}
+                  </span>
+                </h1>
+                <p className="text-[10px] text-slate-400 font-mono">Waiting Lobby System</p>
+              </div>
             </div>
           </div>
           
@@ -1392,9 +1513,9 @@ export default function App() {
                           ) : (
                             <button
                               onClick={() => handleSelectFranchise(team.name)}
-                              disabled={!!myFranchiseSelection}
+                              disabled={!!myFranchiseSelection || (activeUsersList.filter(u => !!u.franchise).length >= maxTeamsCount)}
                               className={`px-3 py-1 font-black text-[9px] uppercase rounded-lg tracking-wider transition-all cursor-pointer ${
-                                myFranchiseSelection 
+                                (myFranchiseSelection || (activeUsersList.filter(u => !!u.franchise).length >= maxTeamsCount))
                                   ? 'bg-slate-900 border border-slate-850 text-slate-650 cursor-not-allowed font-bold'
                                   : 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:scale-102 active:scale-95'
                               }`}
@@ -1525,18 +1646,69 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       
+      {/* Leave Confirmation Modal */}
+      {showLeaveConfirmation && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl text-center">
+            <div className="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center mx-auto text-red-500 border border-red-500/20">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-white font-extrabold text-sm uppercase tracking-wider">Leave Bidding Arena?</h3>
+              <p className="text-xs text-slate-400 font-medium">
+                The auction is in progress. Are you sure you want to leave?
+              </p>
+            </div>
+            <div className="flex space-x-3 pt-2">
+              <button
+                onClick={() => setShowLeaveConfirmation(false)}
+                className="flex-1 py-2.5 bg-slate-950 border border-slate-850 hover:bg-slate-900 hover:border-slate-750 text-slate-350 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Stay
+              </button>
+              <button
+                onClick={() => {
+                  setShowLeaveConfirmation(false);
+                  handleLogout('home');
+                }}
+                className="flex-1 py-2.5 bg-red-650 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Leave
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Top Banner Navigation */}
       <header className="bg-slate-900 border-b border-slate-800 py-4 px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 sticky top-0 z-50 backdrop-blur-md bg-opacity-95">
-        <div className="flex items-center space-x-3">
-          <div className="bg-gradient-to-r from-amber-500 to-yellow-400 p-2 rounded-xl shadow-md flex items-center justify-center">
-            <Trophy className="w-5 h-5 text-slate-950" />
-          </div>
-          <div>
-            <h1 className="text-base font-extrabold text-white tracking-tight flex items-center space-x-2">
-              <span className="font-display uppercase">IPL Arena</span>
-              <span className="text-[10px] bg-amber-500/10 text-yellow-400 px-2 py-0.5 rounded-full border border-yellow-500/20">LIVE 2026</span>
-            </h1>
-            <p className="text-[10px] text-slate-400 font-mono">Synced Auction Panel</p>
+        <div className="flex items-center space-x-4">
+          <button
+            onClick={() => {
+              const isAuctionActive = auctionState.lobbyStatus === 'active' && !auctionState.isEnded;
+              if (isAuctionActive) {
+                setShowLeaveConfirmation(true);
+              } else {
+                handleLogout();
+              }
+            }}
+            className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-850 text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-700 transition-all cursor-pointer"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            <span>Back</span>
+          </button>
+
+          <div className="flex items-center space-x-3 border-l border-slate-850 pl-4">
+            <div className="bg-gradient-to-r from-amber-500 to-yellow-400 p-2 rounded-xl shadow-md flex items-center justify-center">
+              <Trophy className="w-5 h-5 text-slate-950" />
+            </div>
+            <div>
+              <h1 className="text-base font-extrabold text-white tracking-tight flex items-center space-x-2">
+                <span className="font-display uppercase">IPL Arena</span>
+                <span className="text-[10px] bg-amber-500/10 text-yellow-400 px-2 py-0.5 rounded-full border border-yellow-500/20">LIVE 2026</span>
+              </h1>
+              <p className="text-[10px] text-slate-400 font-mono">Synced Auction Panel</p>
+            </div>
           </div>
         </div>
 
@@ -1627,7 +1799,7 @@ export default function App() {
 
         {activeTab === 'squads' && (
           <FranchiseSquads 
-            franchises={franchises} 
+            franchises={participatingFranchises} 
             players={players} 
             soldPlayers={auctionState.soldPlayers} 
             userRole={userRole}
@@ -1638,7 +1810,7 @@ export default function App() {
         {activeTab === 'analytics' && (
           <Analytics 
             players={players} 
-            franchises={franchises} 
+            franchises={participatingFranchises} 
             soldPlayers={auctionState.soldPlayers} 
             unsoldPlayerIds={auctionState.unsoldPlayerIds}
             logs={auctionState.logs}
@@ -2425,11 +2597,11 @@ export default function App() {
                     <Landmark className="w-4 h-4 text-emerald-400" />
                     <span>Budgets & Squads</span>
                   </h3>
-                  <span className="text-[10px] text-slate-500">10 Teams</span>
+                  <span className="text-[10px] text-slate-500">{activeTeamsCount} Teams</span>
                 </div>
 
                 <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                  {(Object.values(franchises) as Franchise[]).map((team) => {
+                  {(Object.values(participatingFranchises) as Franchise[]).map((team) => {
                     const isMyTeam = userRole === team.name;
                     return (
                       <div 
