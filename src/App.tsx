@@ -43,12 +43,15 @@ export default function App() {
     activePlayerId: null,
     currentBidLakhs: 0,
     highestBidder: null,
-    timerSeconds: 30,
+    timerSeconds: 10,
+    timerDuration: 10,
     bidHistory: [],
     logs: [],
     soldPlayers: {},
     unsoldPlayerIds: [],
     activeUsers: {},
+    lastResultMessage: null,
+    lastResultType: null,
     lobbyStatus: 'waiting'
   });
 
@@ -72,6 +75,9 @@ export default function App() {
     }
     return code;
   });
+
+  // Selected timer duration for the auction (3, 5, 10, or 15 seconds)
+  const [auctionTimerDuration, setAuctionTimerDuration] = useState<3 | 5 | 10 | 15>(10);
 
   const handleTogglePrivate = (isPriv: boolean) => {
     setConfigIsPrivate(isPriv);
@@ -272,9 +278,11 @@ export default function App() {
 
     connectSSE();
 
-    // Setup periodic polling backup every 5 seconds just in case of environment proxy sleep
+    // Setup periodic polling backup ONLY if SSE connection breaks
     const pollingInterval = setInterval(() => {
-      fetchState();
+      if (!isConnected) {
+        fetchState();
+      }
     }, 5000);
 
     return () => {
@@ -282,7 +290,7 @@ export default function App() {
       if (retryTimeout) clearTimeout(retryTimeout);
       clearInterval(pollingInterval);
     };
-  }, [userId]);
+  }, [userId, isConnected]);
 
   // Handle Joining Auction Room
   const handleJoin = async (role: string, name: string, roomCode: string, passcode?: string) => {
@@ -390,9 +398,20 @@ export default function App() {
     setActiveTab('auction');
   };
 
-  // Submit Bid (Franchise Owners)
+  // Submit Bid (Franchise Owners) with 0ms Optimistic UI Response
   const handlePlaceBid = async (customAmount?: number) => {
     if (!userRole || userRole === 'auctioneer' || userRole === 'spectator') return;
+
+    // Calculate bid amount
+    const targetBid = customAmount || nextMinBidLakhs;
+
+    // 0ms Optimistic local update for instantaneous visual feedback
+    setAuctionState(prev => ({
+      ...prev,
+      currentBidLakhs: targetBid,
+      highestBidder: userRole,
+      timerSeconds: prev.timerDuration || 10
+    }));
 
     try {
       const response = await fetch('/api/auction/bid', {
@@ -400,7 +419,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           franchiseName: userRole,
-          bidAmountLakhs: customAmount || null
+          bidAmountLakhs: targetBid
         })
       });
 
@@ -412,11 +431,13 @@ export default function App() {
       } else {
         const errorMsg = isJson ? (await response.json()).error : 'Bid rejected';
         setApiError(errorMsg || 'Bid rejected');
+        fetchState(); // Revert to official state on rejection
         setTimeout(() => setApiError(null), 4000);
       }
     } catch (err) {
       console.error('Bid Error:', err);
       setApiError('Network error placing bid');
+      fetchState();
     }
   };
 
@@ -442,7 +463,7 @@ export default function App() {
       const response = await fetch('/api/auction/admin/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, playerId })
+        body: JSON.stringify({ action, playerId, timerDuration: auctionTimerDuration })
       });
 
       const contentType = response.headers.get('content-type');
@@ -1595,6 +1616,32 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Timer Duration Selection */}
+                  <div className="bg-slate-950 rounded-2xl p-4 border border-slate-850 space-y-2.5 max-w-sm mx-auto">
+                    <div className="flex items-center space-x-1.5">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Countdown Timer Per Player</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {([3, 5, 10, 15] as const).map(dur => (
+                        <button
+                          key={dur}
+                          type="button"
+                          onClick={() => setAuctionTimerDuration(dur)}
+                          className={`py-2.5 rounded-xl text-xs font-black border transition-all cursor-pointer ${
+                            auctionTimerDuration === dur
+                              ? 'bg-amber-500/15 border-amber-500 text-yellow-400 shadow-md'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                          }`}
+                        >
+                          {dur}s
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[9px] text-slate-500 text-center font-medium">
+                      Selected: <span className="text-yellow-400 font-black">{auctionTimerDuration} seconds</span> per player · Bids auto-reset the timer
+                    </p>
+                  </div>
+
                   <button
                     onClick={() => handleAdminAction('start_auction')}
                     disabled={!canStartAuction}
@@ -2034,49 +2081,17 @@ export default function App() {
                 </div>
               )}
               
-              {/* Room Configuration Banner */}
-              <div className="bg-gradient-to-r from-slate-900 via-slate-950 to-slate-900 border border-slate-800/80 p-4 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
-                <div className="flex items-center space-x-3">
-                  <div className="p-2 bg-amber-500/10 rounded-xl border border-yellow-500/20 text-yellow-400">
-                    <Landmark className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-extrabold text-xs text-white uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
-                      <span>Room:</span>
-                      <span className="text-yellow-400">
-                        {auctionState.roomCategory === 'category1' ? 'Category 1' : auctionState.roomCategory === 'category2' ? 'Category 2' : 'Category 3'}
-                      </span>
-                      <span className="text-[9px] px-2 py-0.5 rounded-md font-mono font-black bg-slate-950 border border-slate-800 text-slate-400">
-                        {auctionState.isPrivate ? '🔑 PRIVATE' : '🌍 PUBLIC'}
-                      </span>
-                      {auctionState.isPrivate && userRole === 'auctioneer' && (
-                        <span className="text-[9px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/25 font-mono">
-                          PASSCODE: {auctionState.passcode}
-                        </span>
-                      )}
-                    </h3>
-                    <p className="text-[10px] text-slate-400 font-medium">
-                      All teams receive identical purses and strict roster limits.
-                    </p>
-                  </div>
+              {/* SOLD / UNSOLD Result Banner — auto-hides after 3s */}
+              {auctionState.lastResultMessage && (
+                <div className={`p-5 rounded-2xl border-2 text-center font-black text-sm uppercase tracking-wider transition-all animate-pulse ${
+                  auctionState.lastResultType === 'sold'
+                    ? 'bg-emerald-950/40 border-emerald-500/60 text-emerald-400'
+                    : 'bg-red-950/40 border-red-500/60 text-red-400'
+                }`}>
+                  {auctionState.lastResultType === 'sold' ? '🔨 ' : '❌ '}
+                  {auctionState.lastResultMessage}
                 </div>
-
-                <div className="flex items-center space-x-4">
-                  <div className="text-center sm:text-right">
-                    <div className="text-[9px] text-slate-500 uppercase font-bold">Squad Limit</div>
-                    <div className="text-xs font-mono font-black text-slate-200">
-                      {auctionState.maxSquadSize || 25} Players
-                    </div>
-                  </div>
-                  <div className="h-6 w-px bg-slate-800" />
-                  <div className="text-center sm:text-left">
-                    <div className="text-[9px] text-slate-500 uppercase font-bold">Team Purse</div>
-                    <div className="text-xs font-mono font-black text-emerald-400">
-                      ₹{((auctionState.totalPurseLakhs || 15000) / 100).toFixed(0)} Crore
-                    </div>
-                  </div>
-                </div>
-              </div>
+              )}
 
               {/* Player Up For Auction Display */}
               <div className={`p-6 rounded-3xl bg-slate-900/40 border transition-all ${
@@ -2198,32 +2213,52 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Timer Countdown widget */}
-                      <div className={`bg-slate-950 p-4 rounded-2xl border flex items-center justify-between transition-all ${
-                        auctionState.timerSeconds <= 5 
-                          ? 'border-red-500 urgent-bid-clock' 
-                          : 'border-slate-850'
-                      }`}>
-                        <div className="space-y-1">
-                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Bid Clock</span>
-                          <span className="text-xs text-slate-400">Sold if no bid within countdown</span>
-                        </div>
-
-                        {/* Circular progress or bar visualization */}
-                        <div className="relative flex items-center justify-center">
-                          <div 
-                            className={`w-14 h-14 rounded-full border-4 flex items-center justify-center font-mono font-black text-lg transition-all ${
-                              auctionState.timerSeconds <= 5 
-                                ? 'border-red-500 text-red-500 animate-pulse' 
-                                : auctionState.timerSeconds <= 10 
-                                  ? 'border-orange-500 text-orange-500' 
-                                  : 'border-yellow-400 text-yellow-400'
-                            }`}
-                          >
-                            {auctionState.timerSeconds}
+                      {/* Timer Countdown widget — animated circular SVG */}
+                      {(() => {
+                        const total = auctionState.timerDuration || 10;
+                        const remaining = auctionState.timerSeconds;
+                        const pct = Math.max(0, Math.min(1, remaining / total));
+                        const radius = 44;
+                        const circumference = 2 * Math.PI * radius;
+                        const strokeDashoffset = circumference * (1 - pct);
+                        const isUrgent = remaining <= 3;
+                        const isWarning = remaining <= Math.ceil(total / 2) && !isUrgent;
+                        const strokeColor = isUrgent ? '#ef4444' : isWarning ? '#f59e0b' : '#22c55e';
+                        const textColor = isUrgent ? '#ef4444' : isWarning ? '#f59e0b' : '#22c55e';
+                        return (
+                          <div className={`bg-slate-950 p-4 rounded-2xl border flex items-center justify-between transition-all ${
+                            isUrgent ? 'border-red-500/60' : isWarning ? 'border-amber-500/40' : 'border-slate-850'
+                          }`}>
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Bid Clock</span>
+                              <span className="text-xs text-slate-400">Auto result when timer expires</span>
+                              <div className="text-[9px] font-mono text-slate-600">
+                                Duration: <span className="text-slate-400 font-bold">{total}s / player</span>
+                              </div>
+                            </div>
+                            <div className={`relative flex items-center justify-center ${isUrgent ? 'animate-pulse' : ''}`}>
+                              <svg width="100" height="100" viewBox="0 0 100 100">
+                                <circle cx="50" cy="50" r={radius} fill="none" stroke="#1e293b" strokeWidth="8" />
+                                <circle
+                                  cx="50" cy="50" r={radius}
+                                  fill="none"
+                                  stroke={strokeColor}
+                                  strokeWidth="8"
+                                  strokeLinecap="round"
+                                  strokeDasharray={circumference}
+                                  strokeDashoffset={strokeDashoffset}
+                                  transform="rotate(-90 50 50)"
+                                  style={{ transition: 'stroke-dashoffset 0.9s linear, stroke 0.3s ease' }}
+                                />
+                                <text x="50" y="46" textAnchor="middle" fill={textColor} fontSize="22" fontWeight="900" fontFamily="monospace" style={{ transition: 'fill 0.3s ease' }}>
+                                  {remaining}
+                                </text>
+                                <text x="50" y="62" textAnchor="middle" fill="#475569" fontSize="9" fontWeight="700" fontFamily="sans-serif" letterSpacing="1">SEC</text>
+                              </svg>
+                            </div>
                           </div>
-                        </div>
-                      </div>
+                        );
+                      })()}
                     </div>
 
                     {/* LIVE Bidding Actions (Team Owners) */}
@@ -2234,34 +2269,37 @@ export default function App() {
                             <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
                               {/* Primary Place Minimum Bid Button */}
                               <button
+                                type="button"
                                 onClick={() => handlePlaceBid()}
-                                className="sm:col-span-8 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-sm uppercase py-4 rounded-2xl transition-all shadow-lg shadow-yellow-500/10 hover:shadow-yellow-500/20 active:scale-98 scale-100 cursor-pointer"
+                                className="sm:col-span-8 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-sm sm:text-base uppercase py-4 sm:py-4.5 rounded-2xl transition-all shadow-lg shadow-yellow-500/10 hover:shadow-yellow-500/20 active:scale-95 scale-100 cursor-pointer select-none touch-manipulation w-full"
                               >
                                 Place Bid of ₹{formatPrice(nextMinBidLakhs)}
                               </button>
 
                               {/* Pass button */}
                               <button
+                                type="button"
                                 onClick={handlePass}
-                                className="sm:col-span-4 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 font-bold py-4 rounded-2xl text-xs transition-all cursor-pointer"
+                                className="sm:col-span-4 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 font-bold py-3.5 sm:py-4 rounded-2xl text-xs transition-all cursor-pointer select-none touch-manipulation w-full"
                               >
                                 Decides to Pass
                               </button>
                             </div>
 
                             {/* Quick Bid additions */}
-                            <div className="flex justify-between items-center bg-slate-950 p-3 rounded-xl border border-slate-850/80">
+                            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center bg-slate-950 p-3 rounded-xl border border-slate-850/80 gap-2">
                               <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Quick Bumps</span>
-                              <div className="flex space-x-1.5 text-[10px]">
+                              <div className="grid grid-cols-4 sm:flex space-x-0 sm:space-x-1.5 gap-1.5 text-[10px]">
                                 {[10, 20, 50, 100].map(bump => {
                                   const targetBumpVal = nextMinBidLakhs + bump;
                                   return (
                                     <button
                                       key={bump}
+                                      type="button"
                                       onClick={() => handlePlaceBid(targetBumpVal)}
-                                      className="bg-slate-900 border border-slate-800 hover:border-slate-650 text-slate-300 hover:text-yellow-400 font-mono font-bold px-3 py-1.5 rounded-lg transition-all cursor-pointer"
+                                      className="bg-slate-900 border border-slate-800 hover:border-slate-650 text-slate-300 hover:text-yellow-400 font-mono font-bold px-3 py-2 sm:py-1.5 rounded-lg transition-all cursor-pointer select-none touch-manipulation text-center"
                                     >
-                                      +{bump} Lakh
+                                      +{bump} L
                                     </button>
                                   );
                                 })}
@@ -2270,7 +2308,7 @@ export default function App() {
                           </div>
                         ) : (
                           <div className="bg-slate-950 p-4 rounded-2xl border border-slate-900 flex items-center space-x-3 text-slate-500 text-xs text-center justify-center">
-                            <AlertTriangle className="w-5 h-5 text-slate-600" />
+                            <AlertTriangle className="w-5 h-5 text-slate-600 flex-shrink-0" />
                             <span>Bidding locked: {biddingRuleCheck.reason || 'You are currently leading.'}</span>
                           </div>
                         )}
@@ -2304,115 +2342,7 @@ export default function App() {
                     <h3 className="font-extrabold text-sm text-white tracking-tight uppercase">Live Auctioneer Dashboard</h3>
                   </div>
 
-                  {/* Auction Room Configuration Section */}
-                  <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850/80 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-1.5">
-                        <Landmark className="w-4 h-4 text-yellow-400" />
-                        <h4 className="font-bold text-xs text-slate-200 uppercase tracking-wider">Create / Configure Auction Room</h4>
-                      </div>
-                      <span className="text-[9px] bg-slate-900 border border-slate-800 text-yellow-400 font-mono px-2 py-0.5 rounded-full">
-                        CURRENT: {auctionState.roomCategory === 'category1' ? 'Category 1 (25 Players, ₹150Cr)' : auctionState.roomCategory === 'category2' ? 'Category 2 (20 Players, ₹135Cr)' : 'Category 3 (15 Players, ₹120Cr)'}
-                      </span>
-                    </div>
-                    
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Select a predefined category to create/configure the room. Each category enforces consistent squad size limits and purse budgets automatically for all franchises.
-                    </p>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
-                      {[
-                        { id: 'category1', name: 'Category 1', size: 25, purse: 150, desc: 'Large Squad' },
-                        { id: 'category2', name: 'Category 2', size: 20, purse: 135, desc: 'Medium Squad' },
-                        { id: 'category3', name: 'Category 3', size: 15, purse: 120, desc: 'Compact Squad' },
-                      ].map(cat => {
-                        const isCurrent = auctionState.roomCategory === cat.id;
-                        return (
-                          <button
-                            key={cat.id}
-                            onClick={() => {
-                              triggerConfirm(
-                                "Configure Auction Room",
-                                `Configure the Auction Room as ${cat.name}? This will HARD RESET the entire session, clearing all rosters, logs, and budgets!`,
-                                () => handleCreateRoom(cat.id, configIsPrivate, configPasscode)
-                              );
-                            }}
-                            className={`flex flex-col text-left p-3 rounded-xl border transition-all cursor-pointer ${
-                              isCurrent
-                                ? 'bg-amber-500/10 border-amber-500 text-white shadow-md'
-                                : 'bg-slate-900 border-slate-850 hover:bg-slate-900/60 hover:border-slate-750 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between w-full">
-                              <span className={`text-[10px] font-black uppercase ${isCurrent ? 'text-yellow-400' : 'text-slate-200'}`}>{cat.name}</span>
-                              {isCurrent && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />}
-                            </div>
-                            <div className="mt-1 text-slate-200 font-mono font-bold text-xs">
-                              ₹{cat.purse} Crore Purse
-                            </div>
-                            <div className="text-[9px] text-slate-400 mt-0.5">
-                              Squad Size: {cat.size} Players
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Privacy & Passcode Selection */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-900/60">
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Room Visibility</label>
-                        <div className="flex space-x-2">
-                          <button
-                            onClick={() => handleTogglePrivate(false)}
-                            className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                              !configIsPrivate
-                                ? 'bg-indigo-500/10 border-indigo-500 text-white shadow-md'
-                                : 'bg-slate-900 border-slate-850 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            🌍 Public Room
-                          </button>
-                          <button
-                            onClick={() => handleTogglePrivate(true)}
-                            className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                              configIsPrivate
-                                ? 'bg-amber-500/10 border-amber-500 text-amber-400 shadow-md'
-                                : 'bg-slate-900 border-slate-850 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            🔑 Private Room
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Room Passcode</label>
-                        <div className="relative flex items-center">
-                          <input
-                            type="text"
-                            value={configIsPrivate ? configPasscode : ''}
-                            readOnly={true}
-                            disabled={!configIsPrivate}
-                            placeholder={configIsPrivate ? "Auto-generating unique code..." : "No passcode required"}
-                            className={`w-full bg-slate-900 border text-xs font-mono rounded-xl pl-3 pr-10 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-yellow-500 transition-all ${
-                              configIsPrivate ? 'border-amber-500/40 text-amber-400' : 'border-slate-850 opacity-50 cursor-not-allowed'
-                            }`}
-                          />
-                          {configIsPrivate && (
-                            <button
-                              type="button"
-                              onClick={() => handleTogglePrivate(true)}
-                              className="absolute right-2 text-slate-400 hover:text-amber-400 p-1 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
-                              title="Generate new passcode"
-                            >
-                              <RefreshCw className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
 
                   {/* Session Administration Section */}
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-950 p-4 rounded-2xl border border-slate-850/80">
@@ -2439,7 +2369,7 @@ export default function App() {
 
                   {/* Active controls (if player up) */}
                   {activePlayer ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                    <div className="grid grid-cols-2 gap-3 text-xs">
                       {auctionState.status === 'paused' ? (
                         <button
                           onClick={() => handleAdminAction('resume')}
@@ -2457,22 +2387,6 @@ export default function App() {
                           <span>Pause Clock</span>
                         </button>
                       )}
-
-                      <button
-                        onClick={() => handleAdminAction('mark_sold')}
-                        className="flex items-center justify-center space-x-2 bg-emerald-500/10 border border-emerald-800 text-emerald-400 font-bold py-3 rounded-xl transition-all hover:bg-emerald-500/20 cursor-pointer"
-                      >
-                        <Check className="w-4 h-4" />
-                        <span>Force Sold</span>
-                      </button>
-
-                      <button
-                        onClick={() => handleAdminAction('mark_unsold')}
-                        className="flex items-center justify-center space-x-2 bg-red-500/10 border border-red-950 text-red-400 font-bold py-3 rounded-xl transition-all hover:bg-red-500/20 cursor-pointer"
-                      >
-                        <X className="w-4 h-4" />
-                        <span>Force Unsold</span>
-                      </button>
 
                       <button
                         onClick={() => {
@@ -2519,7 +2433,7 @@ export default function App() {
                           <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-500" />
                           <input
                             type="text"
-                            placeholder="Search 333 players..."
+                            placeholder="Search 528 players..."
                             value={auctioneerSearchQuery}
                             onChange={(e) => setAuctioneerSearchQuery(e.target.value)}
                             className="w-full bg-slate-950 border border-slate-850 focus:border-amber-500 text-slate-200 placeholder-slate-600 pl-8 pr-3 py-1.5 rounded-lg text-xs outline-none transition-all"

@@ -9,8 +9,8 @@ import { playersData } from './src/data/players.js';
 import { Player, ActiveAuctionState, Franchise, PlayerRole, PlayerCountryType } from './src/types.js';
 import { GoogleGenAI } from '@google/genai';
 
-const __filename = typeof __filename !== 'undefined' ? __filename : (import.meta.url ? fileURLToPath(import.meta.url) : '');
-const __dirname = typeof __dirname !== 'undefined' ? __dirname : (__filename ? path.dirname(__filename) : '');
+const appFilename = fileURLToPath(import.meta.url);
+const appDirname = path.dirname(appFilename);
 
 const PORT = process.env.PORT || 3000;
 console.log('----------------------------------------------------');
@@ -93,7 +93,8 @@ let state: FullServerState = {
     activePlayerId: null,
     currentBidLakhs: 0,
     highestBidder: null,
-    timerSeconds: 30,
+    timerSeconds: 10,
+    timerDuration: 10,
     bidHistory: [],
     logs: [
       {
@@ -112,6 +113,8 @@ let state: FullServerState = {
     isPrivate: false,
     passcode: '',
     isEnded: false,
+    lastResultMessage: null,
+    lastResultType: null,
     roomName: 'IPL Live Auction',
     roomCode: '',
     playerPoolSize: 'full',
@@ -165,6 +168,15 @@ function loadState() {
         if (state.auction.lobbyStatus === undefined) {
           state.auction.lobbyStatus = 'waiting';
         }
+        if (state.auction.timerDuration === undefined) {
+          state.auction.timerDuration = 10;
+        }
+        if (state.auction.lastResultMessage === undefined) {
+          state.auction.lastResultMessage = null;
+        }
+        if (state.auction.lastResultType === undefined) {
+          state.auction.lastResultType = null;
+        }
         if (loaded.franchises) {
           franchises = loaded.franchises;
         }
@@ -208,42 +220,49 @@ function loadState() {
   }
 }
 
-// Helper to save state
+// Helper to save state efficiently with debouncing
+let saveTimeout: NodeJS.Timeout | null = null;
 let isSaving = false;
-let pendingSave = false;
 
-// Helper to save state asynchronously to prevent blocking the event loop
-function saveState() {
-  if (isSaving) {
-    pendingSave = true;
-    return;
+function saveState(immediate = false) {
+  if (immediate) {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+      saveTimeout = null;
+    }
+    doSaveState();
+  } else {
+    if (saveTimeout) return; // Save is already scheduled soon
+    saveTimeout = setTimeout(() => {
+      saveTimeout = null;
+      doSaveState();
+    }, 1500);
   }
+}
+
+function doSaveState() {
+  if (isSaving) return;
   isSaving = true;
   const dataToSave = {
     auction: state.auction,
     players: state.players,
     franchises: franchises
   };
-  fs.writeFile(STATE_FILE_PATH, JSON.stringify(dataToSave, null, 2), 'utf-8', (err) => {
+  // Unformatted JSON serialization is 10x faster than pretty printing
+  fs.writeFile(STATE_FILE_PATH, JSON.stringify(dataToSave), 'utf-8', (err) => {
     isSaving = false;
     if (err) {
       console.error('Error saving state to disk:', err);
-    }
-    if (pendingSave) {
-      pendingSave = false;
-      saveState();
     }
   });
 }
 
 loadState();
 
-// SSE SSE Clients list
+// SSE Clients list
 let sseClients: any[] = [];
 
-// Helper to broadcast state to all SSE clients
-// Helper to broadcast state to all SSE clients
-// We omit the heavy 'players' list by default during frequent updates (e.g. countdowns/bids)
+// Helper to broadcast state to all SSE clients instantly
 function broadcastState(includePlayers = false) {
   const payload: any = {
     auction: state.auction,
@@ -253,13 +272,19 @@ function broadcastState(includePlayers = false) {
     payload.players = state.players;
   }
   const eventString = `data: ${JSON.stringify(payload)}\n\n`;
-  sseClients.forEach(client => {
+  const activeClients: any[] = [];
+  
+  for (let i = 0; i < sseClients.length; i++) {
+    const client = sseClients[i];
     try {
+      if (client.writableEnded || client.destroyed) continue;
       client.write(eventString);
+      activeClients.push(client);
     } catch (e) {
-      // client connection already closed or dead
+      // socket dead
     }
-  });
+  }
+  sseClients = activeClients;
 }
 
 // Log action helper
@@ -298,6 +323,11 @@ function handleTimerExpiry() {
   const activePlayer = state.players.find(p => p.id === state.auction.activePlayerId);
   if (!activePlayer) return;
 
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+
   if (state.auction.highestBidder && state.auction.currentBidLakhs > 0) {
     // Sold!
     const buyer = state.auction.highestBidder;
@@ -321,18 +351,22 @@ function handleTimerExpiry() {
       f.remainingSlots = (state.auction.maxSquadSize || 25) - f.playersBoughtIds.length;
     }
 
-    addLog('sold', `SOLD! ${activePlayer.name} is acquired by ${buyer} for ₹${formatPrice(finalPrice)}.`);
-    
+    addLog('sold', `SOLD! ${activePlayer.name} is acquired by ${buyer} for \u20b9${formatPrice(finalPrice)}.`);
+    state.auction.lastResultMessage = `SOLD to ${buyer} for \u20b9${formatPrice(finalPrice)}`;
+    state.auction.lastResultType = 'sold';
+
     // Trigger AI commentary for the sale asynchronously
-    triggerAiCommentary(`Write a high-energy, exciting cricket auctioneer announcement celebrating ${activePlayer.name} being sold to ${buyer} for ₹${formatPrice(finalPrice)}. Keep it brief (under 50 words) and authentic to IPL style.`);
-    
+    triggerAiCommentary(`Write a high-energy, exciting cricket auctioneer announcement celebrating ${activePlayer.name} being sold to ${buyer} for \u20b9${formatPrice(finalPrice)}. Keep it brief (under 50 words) and authentic to IPL style.`);
+
   } else {
     // Unsold
     state.auction.unsoldPlayerIds.push(activePlayer.id);
-    addLog('unsold', `${activePlayer.name} goes UNSOLD at a base price of ₹${formatPrice(activePlayer.basePriceLakhs)}.`);
-    
+    addLog('unsold', `${activePlayer.name} goes UNSOLD at a base price of \u20b9${formatPrice(activePlayer.basePriceLakhs)}.`);
+    state.auction.lastResultMessage = 'UNSOLD';
+    state.auction.lastResultType = 'unsold';
+
     // Trigger AI commentary for unsold
-    triggerAiCommentary(`Write a quick auctioneer commentary summarizing that ${activePlayer.name} has gone unsold at their base price of ₹${formatPrice(activePlayer.basePriceLakhs)}. Keep it professional and short (under 40 words).`);
+    triggerAiCommentary(`Write a quick auctioneer commentary summarizing that ${activePlayer.name} has gone unsold at their base price of \u20b9${formatPrice(activePlayer.basePriceLakhs)}. Keep it professional and short (under 40 words).`);
   }
 
   // Set auction to idle
@@ -340,11 +374,18 @@ function handleTimerExpiry() {
   state.auction.activePlayerId = null;
   state.auction.currentBidLakhs = 0;
   state.auction.highestBidder = null;
-  state.auction.timerSeconds = 30;
+  state.auction.timerSeconds = state.auction.timerDuration || 10;
   state.auction.bidHistory = [];
 
   saveState();
   broadcastState();
+
+  // Auto-clear the result message after 3 seconds
+  setTimeout(() => {
+    state.auction.lastResultMessage = null;
+    state.auction.lastResultType = null;
+    broadcastState();
+  }, 3000);
 }
 
 async function triggerAiCommentary(prompt: string) {
@@ -389,6 +430,7 @@ const REAL_CRICBUZZ_IDS: Record<string, number | string> = {};
 
 // API: Proxy Cricbuzz player photo to bypass browser hotlinking/CORS protection, with professional fallback badge generator
 app.get('/api/player-photo/:playerIdOrCricbuzzId', async (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
   try {
     const { playerIdOrCricbuzzId } = req.params;
     let playerName = 'Cricket Player';
@@ -813,7 +855,8 @@ app.post('/api/auction/bid', (req, res) => {
   state.auction.bidHistory.unshift(bidEntry);
   state.auction.highestBidder = franchiseName;
   state.auction.currentBidLakhs = finalBid;
-  state.auction.timerSeconds = 30; // Reset countdown to 30s on fresh bids
+  // Reset countdown to the selected timer duration on every fresh bid
+  state.auction.timerSeconds = state.auction.timerDuration || 10;
 
   addLog('bid', `${franchiseName} bids ₹${formatPrice(finalBid)} for ${activePlayer.name}.`);
   saveState();
@@ -849,7 +892,7 @@ function generateServerPasscode(): string {
 app.post('/api/auction/admin/action', async (req, res) => {
   const { 
     action, playerId, customIncrement, category, isPrivate, passcode,
-    roomName, playerPoolSize, budgetCrores, numTeams, auctionMode
+    roomName, playerPoolSize, budgetCrores, numTeams, auctionMode, timerDuration
   } = req.body;
 
   if (action === 'start') {
@@ -859,6 +902,11 @@ app.post('/api/auction/admin/action', async (req, res) => {
     const player = state.players.find(p => p.id === playerId);
     if (!player) {
       return res.status(404).json({ error: 'Player not found' });
+    }
+
+    // If a timerDuration is provided, update it on the state
+    if (timerDuration && [3, 5, 10, 15].includes(Number(timerDuration))) {
+      state.auction.timerDuration = Number(timerDuration);
     }
 
     // Clean up previous sale / unsold records to support re-releasing players safely at any time
@@ -883,14 +931,17 @@ app.post('/api/auction/admin/action', async (req, res) => {
 
     state.auction.unsoldPlayerIds = state.auction.unsoldPlayerIds.filter(id => id !== playerId);
 
+    // Clear any previous result message when a new player is released
+    state.auction.lastResultMessage = null;
+    state.auction.lastResultType = null;
     state.auction.status = 'active';
     state.auction.activePlayerId = playerId;
     state.auction.currentBidLakhs = 0;
     state.auction.highestBidder = null;
-    state.auction.timerSeconds = 30;
+    state.auction.timerSeconds = state.auction.timerDuration || 10;
     state.auction.bidHistory = [];
 
-    addLog('status', `Auctioneer has released ${player.name} into the bidding war! (Base Price: ₹${formatPrice(player.basePriceLakhs)}).`);
+    addLog('status', `Auctioneer has released ${player.name} into the bidding war! (Base Price: \u20b9${formatPrice(player.basePriceLakhs)}).`);
     
     // AI Player profile summary
     triggerAiCommentary(`Provide a high-energy, exciting 1-2 sentence profile of ${player.name} as he comes up in the IPL Auction. Mention his previous team ${player.previousTeam}, role ${player.role}, country ${player.country}, batting/bowling style, and highlight how useful he could be to team owners. Keep it short.`);
@@ -958,7 +1009,8 @@ app.post('/api/auction/admin/action', async (req, res) => {
       activePlayerId: null,
       currentBidLakhs: 0,
       highestBidder: null,
-      timerSeconds: 30,
+      timerSeconds: 10,
+      timerDuration: 10,
       bidHistory: [],
       logs: [
         {
@@ -977,6 +1029,8 @@ app.post('/api/auction/admin/action', async (req, res) => {
       isPrivate: selectedIsPrivate,
       passcode: finalPasscode,
       isEnded: false,
+      lastResultMessage: null,
+      lastResultType: null,
       roomName: finalRoomName,
       roomCode: finalRoomCode,
       playerPoolSize: finalPlayerPoolSize,
@@ -1012,6 +1066,11 @@ app.post('/api/auction/admin/action', async (req, res) => {
     addLog('status', `Auction room initialized. Code: ${finalRoomCode}. visibility: ${selectedIsPrivate ? 'Private' : 'Public'}.`);
   }
   else if (action === 'start_auction') {
+    // If a timerDuration is provided, set it before starting
+    if (timerDuration && [3, 5, 10, 15].includes(Number(timerDuration))) {
+      state.auction.timerDuration = Number(timerDuration);
+      state.auction.timerSeconds = Number(timerDuration);
+    }
     state.auction.lobbyStatus = 'active';
     addLog('status', 'The Auctioneer has started the auction. Good luck to all franchises!');
     saveState();
@@ -1044,12 +1103,14 @@ app.post('/api/auction/admin/action', async (req, res) => {
 
     let pool = [...playersData];
 
+    const currentTimerDuration = state.auction.timerDuration || 10;
     state.auction = {
       status: 'idle',
       activePlayerId: null,
       currentBidLakhs: 0,
       highestBidder: null,
-      timerSeconds: 30,
+      timerSeconds: currentTimerDuration,
+      timerDuration: currentTimerDuration,
       bidHistory: [],
       logs: [
         {
@@ -1068,6 +1129,8 @@ app.post('/api/auction/admin/action', async (req, res) => {
       isPrivate: currentIsPrivate,
       passcode: currentPasscode,
       isEnded: false,
+      lastResultMessage: null,
+      lastResultType: null,
       roomName: currentRoomName,
       roomCode: currentRoomCode,
       playerPoolSize: currentPlayerPoolSize,
@@ -1189,45 +1252,42 @@ app.post('/api/franchises/:franchiseName/starting11', (req, res) => {
 
 // API: AI-driven Squad & Winner Analysis
 app.post('/api/auction/ai-analysis', async (req, res) => {
-  const ai = getAI();
-  if (!ai) {
-    return res.status(503).json({ error: 'Gemini API is not configured or available. Please provide GEMINI_API_KEY.' });
-  }
-
   try {
-    // Build context
-    let contextStr = 'Here is the detailed squad and Starting 11 data for all 10 IPL Franchises:\n\n';
+    const ai = getAI();
+    if (ai) {
+      // Build context for Gemini
+      let contextStr = 'Here is the detailed squad and Starting 11 data for all 10 IPL Franchises:\n\n';
 
-    Object.values(franchises).forEach(f => {
-      const spent = f.startingPurseLakhs - f.remainingPurseLakhs;
-      contextStr += `### Franchise: ${f.fullName} (${f.name})\n`;
-      contextStr += `- Purse Spent: ₹${(spent / 100).toFixed(2)} Crore, Remaining Purse: ₹${(f.remainingPurseLakhs / 100).toFixed(2)} Crore\n`;
-      contextStr += `- Total Players Bought: ${f.playersBoughtIds.length} (Indian: ${f.indianCount}, Overseas: ${f.overseasCount})\n`;
-      
-      const boughtList = f.playersBoughtIds.map(id => state.players.find(p => p.id === id)).filter(Boolean) as Player[];
-      const starting11List = (f.starting11PlayerIds || []).map(id => state.players.find(p => p.id === id)).filter(Boolean) as Player[];
+      Object.values(franchises).forEach(f => {
+        const spent = f.startingPurseLakhs - f.remainingPurseLakhs;
+        contextStr += `### Franchise: ${f.fullName} (${f.name})\n`;
+        contextStr += `- Purse Spent: ₹${(spent / 100).toFixed(2)} Crore, Remaining Purse: ₹${(f.remainingPurseLakhs / 100).toFixed(2)} Crore\n`;
+        contextStr += `- Total Players Bought: ${f.playersBoughtIds.length} (Indian: ${f.indianCount}, Overseas: ${f.overseasCount})\n`;
+        
+        const boughtList = f.playersBoughtIds.map(id => state.players.find(p => p.id === id)).filter(Boolean) as Player[];
+        const starting11List = (f.starting11PlayerIds || []).map(id => state.players.find(p => p.id === id)).filter(Boolean) as Player[];
 
-      contextStr += `- Full Squad Roster:\n`;
-      if (boughtList.length === 0) {
-        contextStr += `  * No players bought yet.\n`;
-      } else {
-        boughtList.forEach(p => {
-          contextStr += `  * ${p.name} (${p.role} | ${p.countryType} | Age: ${p.age} | Matches: ${p.stats.matches}, Runs: ${p.stats.runs}, Wickets: ${p.stats.wickets}, SR: ${p.stats.strikeRate})\n`;
-        });
-      }
+        contextStr += `- Full Squad Roster:\n`;
+        if (boughtList.length === 0) {
+          contextStr += `  * No players bought yet.\n`;
+        } else {
+          boughtList.forEach(p => {
+            contextStr += `  * ${p.name} (${p.role} | ${p.countryType} | Age: ${p.age} | Matches: ${p.stats.matches}, Runs: ${p.stats.runs}, Wickets: ${p.stats.wickets}, SR: ${p.stats.strikeRate})\n`;
+          });
+        }
 
-      contextStr += `- Designated Starting XI:\n`;
-      if (starting11List.length === 0) {
-        contextStr += `  * No Starting XI designated yet (the franchise hasn't locked their playing 11).\n`;
-      } else {
-        starting11List.forEach(p => {
-          contextStr += `  * [XI] ${p.name} (${p.role} | ${p.countryType} | Batting: ${p.battingStyle} | Bowling: ${p.bowlingStyle})\n`;
-        });
-      }
-      contextStr += '\n';
-    });
+        contextStr += `- Designated Starting XI:\n`;
+        if (starting11List.length === 0) {
+          contextStr += `  * No Starting XI designated yet (the franchise hasn't locked their playing 11).\n`;
+        } else {
+          starting11List.forEach(p => {
+            contextStr += `  * [XI] ${p.name} (${p.role} | ${p.countryType} | Batting: ${p.battingStyle} | Bowling: ${p.bowlingStyle})\n`;
+          });
+        }
+        contextStr += '\n';
+      });
 
-    const prompt = `
+      const prompt = `
 You are an elite, world-class IPL Cricket Analyst, strategist, and professional sports commentator.
 You have been hired to analyze the final squads and designated Starting XI of the IPL franchises and declare the WINNING team of the tournament based on deep AI-driven simulation and performance analysis.
 
@@ -1244,17 +1304,65 @@ Do not use generic hardcoded formulas or heuristics; instead, leverage your deep
 Format the output in clean, eye-catching, professional Markdown with headers, bold terms, bullet points, and high-energy sports writing. Keep it concise, engaging, and professional.
 `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+
+      const markdownText = response.text?.trim() || 'Failed to generate analysis.';
+      return res.json({ success: true, analysis: markdownText });
+    }
+
+    // Dynamic statistical evaluation generator when API key is unconfigured
+    const teamStats = Object.values(franchises).map(f => {
+      const boughtList = f.playersBoughtIds.map(id => state.players.find(p => p.id === id)).filter(Boolean) as Player[];
+      const totalRuns = boughtList.reduce((acc, p) => acc + p.stats.runs, 0);
+      const totalWickets = boughtList.reduce((acc, p) => acc + p.stats.wickets, 0);
+      const spent = f.startingPurseLakhs - f.remainingPurseLakhs;
+      const balanceScore = (boughtList.length * 10) + (f.overseasCount <= 8 ? 20 : 0) + (totalRuns / 200) + (totalWickets * 2);
+      return {
+        ...f,
+        boughtList,
+        totalRuns,
+        totalWickets,
+        spent,
+        balanceScore: Math.round(balanceScore)
+      };
+    }).sort((a, b) => b.balanceScore - a.balanceScore);
+
+    const winner = teamStats[0];
+
+    let report = `# 🏆 IPL Auction Final Tournament Evaluation & Power Rankings\n\n`;
+    report += `### 📊 Executive Summary\n`;
+    report += `Following high-intensity live bidding across all participating franchises, here is the comprehensive evaluation of team rosters, purse utilization, squad depth, and tournament winning probabilities.\n\n`;
+
+    report += `### 🥇 Champion Declaration\n`;
+    report += `**PROJECTED TOURNAMENT CHAMPION: ${winner.fullName} (${winner.name})**\n\n`;
+    report += `- **Purse Efficiency**: Spent ₹${(winner.spent / 100).toFixed(2)} Crore with ₹${(winner.remainingPurseLakhs / 100).toFixed(2)} Crore remaining.\n`;
+    report += `- **Squad Strength**: ${winner.playersBoughtIds.length} Total Players (${winner.indianCount} Indian, ${winner.overseasCount} Overseas).\n`;
+    report += `- **Combined Squad Stats**: ${winner.totalRuns.toLocaleString()} Total T20 Runs & ${winner.totalWickets} Career Wickets.\n`;
+    report += `- **Key Tactical Edge**: Exceptional balance between explosive batting power and disciplined bowling variations across all match phases.\n\n`;
+
+    report += `### 📈 Tournament Power Rankings\n\n`;
+    report += `| Rank | Franchise | Squad Size | Overseas | Purse Spent | Total Runs | Total Wkts | Overall Rating |\n`;
+    report += `|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|\n`;
+    teamStats.forEach((t, i) => {
+      report += `| **#${i + 1}** | **${t.fullName}** (${t.name}) | ${t.playersBoughtIds.length} | ${t.overseasCount}/8 | ₹${(t.spent / 100).toFixed(2)} Cr | ${t.totalRuns.toLocaleString()} | ${t.totalWickets} | **${t.balanceScore} pts** |\n`;
     });
 
-    const markdownText = response.text?.trim() || 'Failed to generate analysis.';
-    res.json({ success: true, analysis: markdownText });
+    report += `\n### ⚡ Key Franchise Evaluation Breakdown\n\n`;
+    teamStats.slice(0, 5).forEach(t => {
+      report += `#### 🔹 ${t.fullName} (${t.name})\n`;
+      report += `- **Squad Balance**: ${t.boughtList.filter(p => p.role === 'WicketKeeper').length} Wicketkeeper(s), ${t.boughtList.filter(p => p.role === 'AllRounder').length} All-Rounder(s), ${t.boughtList.filter(p => p.role === 'Bowler').length} Specialist Bowler(s).\n`;
+      report += `- **Top Players Acquired**: ${t.boughtList.slice(0, 3).map(p => p.name).join(', ') || 'No players bought'}.\n`;
+      report += `- **Roster Limit Compliance**: Squad size ${t.playersBoughtIds.length}/25, Overseas slots ${t.overseasCount}/8.\n\n`;
+    });
+
+    res.json({ success: true, analysis: report });
 
   } catch (err: any) {
-    console.error('Error generating AI analysis:', err);
-    res.status(500).json({ error: `AI Analysis failed: ${err.message || err}` });
+    console.error('Error generating analysis:', err);
+    res.status(500).json({ error: `Analysis failed: ${err.message || err}` });
   }
 });
 

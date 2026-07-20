@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 auction_state.json
+data/auction_state.json
+suggest_response.txt

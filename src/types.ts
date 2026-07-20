@@ -84,6 +84,7 @@ export interface ActiveAuctionState {
   currentBidLakhs: number;
   highestBidder: string | null;
   timerSeconds: number;
+  timerDuration: number; // Selected duration for each player's countdown (3, 5, 10, or 15 seconds)
   bidHistory: BidHistoryEntry[];
   logs: AuctionLog[];
   soldPlayers: Record<string, { franchise: string; priceLakhs: number }>; // playerId -> sold details
@@ -95,6 +96,8 @@ export interface ActiveAuctionState {
   isPrivate?: boolean;
   passcode?: string;
   isEnded?: boolean;
+  lastResultMessage?: string | null; // e.g. "SOLD to CSK for ₹15.00 Crore" or "UNSOLD"
+  lastResultType?: 'sold' | 'unsold' | null;
   
   // Custom room configuration settings
   roomName?: string;

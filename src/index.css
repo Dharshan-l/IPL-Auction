@@ -48,6 +48,18 @@
   border-color: rgb(239, 68, 68) !important;
 }
 
+/* Mobile touch responsiveness and fast click handling */
+html, body {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+button, a, input, select {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Custom scrolling list styling */
 ::-webkit-scrollbar {
   width: 6px;

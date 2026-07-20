@@ -28,6 +28,8 @@ export default function PlayerImage({ player, className = "w-12 h-12 rounded-xl 
     <img
       src={imgSrc}
       alt={player.name}
+      loading="lazy"
+      decoding="async"
       referrerPolicy="no-referrer"
       onError={handleError}
       className={className}
