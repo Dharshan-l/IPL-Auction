@@ -7,6 +7,7 @@ import { createServer as createViteServer } from 'vite';
 import { playersData } from './src/data/players.js';
 import { Player, ActiveAuctionState, Franchise, PlayerRole, PlayerCountryType } from './src/types.js';
 import { GoogleGenAI } from '@google/genai';
+const PORT = process.env.PORT || 3000;
 console.log('----------------------------------------------------');
 console.log('Starting IPL Auction Server Initialization...');
 console.log('Environment Loaded successfully.');
