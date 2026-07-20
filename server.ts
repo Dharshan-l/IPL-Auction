@@ -3,16 +3,10 @@ dotenv.config();
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { playersData } from './src/data/players.js';
 import { Player, ActiveAuctionState, Franchise, PlayerRole, PlayerCountryType } from './src/types.js';
 import { GoogleGenAI } from '@google/genai';
-
-const appFilename = fileURLToPath(import.meta.url);
-const appDirname = path.dirname(appFilename);
-
-const PORT = process.env.PORT || 3000;
 console.log('----------------------------------------------------');
 console.log('Starting IPL Auction Server Initialization...');
 console.log('Environment Loaded successfully.');
