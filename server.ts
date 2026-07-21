@@ -705,9 +705,18 @@ app.post('/api/auction/join', (req, res) => {
     }
   }
 
+  const trimmedUsername = username.trim();
+
+  // If a user with the same username is already connected (e.g. page refresh / reconnect),
+  // clean up their stale session so they aren't blocked or duplicated.
+  const existingUserKey = Object.keys(state.auction.activeUsers).find(
+    id => state.auction.activeUsers[id].username.toLowerCase() === trimmedUsername.toLowerCase()
+  );
+  if (existingUserKey) {
+    delete state.auction.activeUsers[existingUserKey];
+  }
+
   // Check room ownership limit for franchise owners
-  // Count users who have joined with the franchise_owner role (not those who have selected a franchise,
-  // since franchise selection happens in the lobby AFTER joining — these are two separate steps).
   if (role === 'franchise_owner') {
     const franchiseOwnerCount = Object.values(state.auction.activeUsers).filter(u => u.role === 'franchise_owner').length;
     if (franchiseOwnerCount >= (state.auction.numTeams || 10)) {
@@ -718,7 +727,7 @@ app.post('/api/auction/join', (req, res) => {
   const userId = Math.random().toString(36).substring(2, 11);
   state.auction.activeUsers[userId] = {
     userId,
-    username: username.trim(),
+    username: trimmedUsername,
     role,
     franchise: null,
     isReady: false,
@@ -726,11 +735,52 @@ app.post('/api/auction/join', (req, res) => {
   };
 
   const displayName = role === 'auctioneer' ? 'Auctioneer (Admin)' : role === 'spectator' ? 'Spectator' : 'Franchise Owner';
-  addLog('join', `${username.trim()} joined the lobby as ${displayName}.`);
+  addLog('join', `${trimmedUsername} joined the lobby as ${displayName}.`);
   saveState();
+  invalidateCache();
   broadcastState();
 
   res.json({ userId, role, status: 'success' });
+});
+
+// API: AI Auto-Select Team for Franchise Owner
+app.post('/api/auction/auto-select-team', (req, res) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+
+  const user = state.auction.activeUsers[userId];
+  if (!user) {
+    return res.status(404).json({ error: 'User session not found' });
+  }
+
+  const maxTeams = state.auction.numTeams || 10;
+  const availableTeamKeys = Object.keys(defaultFranchises).slice(0, maxTeams);
+  
+  const takenTeams = new Set(
+    Object.values(state.auction.activeUsers)
+      .filter(u => u.userId !== userId && !!u.franchise)
+      .map(u => u.franchise)
+  );
+
+  const firstAvailable = availableTeamKeys.find(t => !takenTeams.has(t));
+  if (!firstAvailable) {
+    return res.status(400).json({ error: 'All available franchise teams have already been claimed in this room.' });
+  }
+
+  const prevFranchise = user.franchise;
+  user.franchise = firstAvailable;
+  addLog('status', `🤖 AI Auto-assigned ${firstAvailable} to ${user.username}.`);
+  if (prevFranchise && prevFranchise !== firstAvailable) {
+    addLog('status', `Team ${prevFranchise} released by ${user.username}.`);
+  }
+
+  saveState();
+  invalidateCache();
+  broadcastState();
+
+  res.json({ success: true, franchise: firstAvailable, activeUsers: state.auction.activeUsers });
 });
 
 // API: Team Selection Locking in Lobby

@@ -375,6 +375,35 @@ export default function App() {
     }
   };
 
+  // Handle AI Auto-Select Franchise Team
+  const handleAutoSelectFranchise = async () => {
+    if (!userId) return;
+    try {
+      const response = await fetch('/api/auction/auto-select-team', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
+      });
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType && contentType.includes('application/json');
+
+      if (response.ok && isJson) {
+        const resData = await response.json();
+        if (resData.franchise) {
+          setUserRole(resData.franchise);
+          localStorage.setItem('ipl_userRole', resData.franchise);
+        }
+        setApiError(null);
+      } else {
+        const errorMsg = isJson ? (await response.json()).error : 'Auto team selection failed';
+        setApiError(errorMsg || 'Auto team selection failed');
+      }
+    } catch (err) {
+      console.error('Auto Select Franchise Error:', err);
+      setApiError('Network error auto-selecting franchise');
+    }
+  };
+
   // Handle Toggle Ready Status
   const handleToggleReady = async (isReady: boolean) => {
     if (!userId) return;
@@ -420,7 +449,8 @@ export default function App() {
 
   // Submit Bid (Franchise Owners) with 0ms Optimistic UI Response
   const handlePlaceBid = async (customAmount?: number) => {
-    if (!userRole || userRole === 'auctioneer' || userRole === 'spectator') return;
+    const activeFranchise = effectiveFranchiseName;
+    if (!activeFranchise || userRole === 'auctioneer' || userRole === 'spectator') return;
 
     // Calculate bid amount
     const targetBid = customAmount || nextMinBidLakhs;
@@ -429,7 +459,7 @@ export default function App() {
     setAuctionState(prev => ({
       ...prev,
       currentBidLakhs: targetBid,
-      highestBidder: userRole,
+      highestBidder: activeFranchise,
       timerSeconds: prev.timerDuration || 10
     }));
 
@@ -438,7 +468,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          franchiseName: userRole,
+          franchiseName: activeFranchise,
           bidAmountLakhs: targetBid
         })
       });
@@ -684,16 +714,41 @@ export default function App() {
 
   const nextMinBidLakhs = activePlayer ? getNextMinimumBid(auctionState.currentBidLakhs, activePlayer.basePriceLakhs) : 0;
 
+  // User object from server activeUsers list
+  const myUser = useMemo(() => {
+    return userId ? auctionState.activeUsers[userId] : null;
+  }, [userId, auctionState.activeUsers]);
+
+  // Derive effective franchise name (checking client role + server assigned franchise)
+  const effectiveFranchiseName = useMemo(() => {
+    if (userRole && userRole !== 'franchise_owner' && userRole !== 'auctioneer' && userRole !== 'spectator') {
+      return userRole;
+    }
+    return myUser?.franchise || null;
+  }, [userRole, myUser]);
+
+  // Synchronize userRole with server assigned franchise when assigned
+  useEffect(() => {
+    if (myUser?.franchise && userRole !== myUser.franchise) {
+      setUserRole(myUser.franchise);
+      localStorage.setItem('ipl_userRole', myUser.franchise);
+    }
+  }, [myUser?.franchise, userRole]);
+
   // Franchise object for current user (if team owner)
-  const myFranchise = userRole && franchises[userRole] ? franchises[userRole] : null;
+  const myFranchise = useMemo(() => {
+    return effectiveFranchiseName && franchises[effectiveFranchiseName] ? franchises[effectiveFranchiseName] : null;
+  }, [effectiveFranchiseName, franchises]);
 
   // Check bidding eligibility for current team owner
   const biddingRuleCheck = useMemo(() => {
     if (!isAuctioneerConnected) return { eligible: false, reason: 'Auctioneer is disconnected' };
-    if (!myFranchise || !activePlayer) return { eligible: false, reason: '' };
+    if (!activePlayer) return { eligible: false, reason: 'No player is currently up for auction' };
+    if (!myFranchise) return { eligible: false, reason: 'You have not claimed an IPL franchise team yet' };
 
-    if (myFranchise.playersBoughtIds.length >= 25) {
-      return { eligible: false, reason: 'Your roster is full (max 25 players)' };
+    const maxSquadSize = auctionState.maxSquadSize || 25;
+    if (myFranchise.playersBoughtIds.length >= maxSquadSize) {
+      return { eligible: false, reason: `Your roster is full (max ${maxSquadSize} players)` };
     }
 
     if (activePlayer.countryType === PlayerCountryType.Overseas && myFranchise.overseasCount >= 8) {
@@ -701,15 +756,15 @@ export default function App() {
     }
 
     if (nextMinBidLakhs > myFranchise.remainingPurseLakhs) {
-      return { eligible: false, reason: 'Insufficient remaining purse' };
+      return { eligible: false, reason: `Insufficient remaining purse (${formatPrice(myFranchise.remainingPurseLakhs)} left)` };
     }
 
-    if (auctionState.highestBidder === userRole) {
+    if (auctionState.highestBidder === myFranchise.name) {
       return { eligible: false, reason: 'You are currently the highest bidder' };
     }
 
     return { eligible: true, reason: '' };
-  }, [myFranchise, activePlayer, nextMinBidLakhs, auctionState.highestBidder, userRole]);
+  }, [isAuctioneerConnected, activePlayer, myFranchise, nextMinBidLakhs, auctionState.highestBidder, auctionState.maxSquadSize]);
 
   // --- SPA SCREEN RENDERS ---
 
@@ -1535,7 +1590,16 @@ export default function App() {
             <div className="bg-slate-900/40 border border-slate-850 p-5 rounded-3xl space-y-4">
               <div className="flex items-center justify-between border-b border-slate-850/60 pb-2">
                 <h3 className="font-extrabold text-xs text-white uppercase tracking-wider">IPL Franchise Ownership</h3>
-                <span className="text-[10px] text-slate-500">Only 1 Owner per Franchise</span>
+                {myUser?.role === 'franchise_owner' && !myFranchiseSelection && (
+                  <button
+                    onClick={handleAutoSelectFranchise}
+                    className="px-2.5 py-1 bg-gradient-to-r from-amber-500/20 to-yellow-400/20 border border-yellow-500/40 text-yellow-400 hover:text-white font-bold text-[10px] uppercase rounded-lg transition-all cursor-pointer flex items-center space-x-1"
+                  >
+                    <Sparkles className="w-3 h-3 text-amber-400 animate-pulse" />
+                    <span>⚡ AI Auto-Select Team</span>
+                  </button>
+                )}
+                {!myFranchiseSelection && <span className="text-[10px] text-slate-500">Only 1 Owner per Franchise</span>}
               </div>
 
               {/* Bug #7 fix: Only show teams up to the configured numTeams for this room */}
@@ -2290,6 +2354,40 @@ export default function App() {
                     {/* LIVE Bidding Actions (Team Owners) */}
                     {userRole !== 'auctioneer' && userRole !== 'spectator' && (
                       <div className="pt-2">
+                        {!myFranchise && (
+                          <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-2xl space-y-2 text-center mb-3">
+                            <div className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center justify-center space-x-1.5">
+                              <AlertTriangle className="w-4 h-4 text-amber-400" />
+                              <span>You haven't claimed an IPL Franchise team yet!</span>
+                            </div>
+                            <p className="text-[11px] text-slate-300">
+                              Claim an available team below to start bidding on players in this live auction:
+                            </p>
+                            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                              {teamKeys.slice(0, auctionState.numTeams || 10).map(t => {
+                                const isTaken = Object.values(auctionState.activeUsers || {}).some(u => u.franchise === t.name);
+                                if (isTaken) return null;
+                                return (
+                                  <button
+                                    key={t.name}
+                                    onClick={() => handleSelectFranchise(t.name)}
+                                    className="px-3 py-1.5 bg-slate-900 border hover:border-amber-500 text-slate-200 hover:text-white font-black text-xs rounded-lg transition-all cursor-pointer"
+                                    style={{ borderColor: t.color }}
+                                  >
+                                    Claim {t.name}
+                                  </button>
+                                );
+                              })}
+                              <button
+                                onClick={handleAutoSelectFranchise}
+                                className="px-3 py-1.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-xs uppercase rounded-lg transition-all shadow cursor-pointer flex items-center space-x-1"
+                              >
+                                <Sparkles className="w-3.5 h-3.5" />
+                                <span>⚡ AI Auto-Select</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         {biddingRuleCheck.eligible ? (
                           <div className="space-y-3">
                             <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
