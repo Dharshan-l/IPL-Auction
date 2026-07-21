@@ -1,3 +1,8 @@
+/**
+ * @deprecated Bug #8 fix: This component is unused dead code.
+ * The app uses its own inline role-selection UI inside App.tsx renderJoinRoomScreen().
+ * Kept for reference only — do NOT import or use this component.
+ */
 import React, { useState } from 'react';
 import { Shield, User, Users, Trophy, Lock } from 'lucide-react';
 import { Franchise } from '../types';

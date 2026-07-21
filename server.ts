@@ -257,18 +257,34 @@ loadState();
 // SSE Clients list
 let sseClients: any[] = [];
 
+// Cached serialized payloads to avoid re-serializing on every broadcast
+let cachedFullPayload: string | null = null;
+let cachedPlayersPayload: string | null = null;
+
+// Invalidate cached payloads whenever state changes
+function invalidateCache() {
+  cachedFullPayload = null;
+  cachedPlayersPayload = null;
+}
+
 // Helper to broadcast state to all SSE clients instantly
 function broadcastState(includePlayers = false) {
-  const payload: any = {
-    auction: state.auction,
-    franchises: franchises
-  };
+  let eventString: string;
   if (includePlayers) {
-    payload.players = state.players;
+    // Full payload with players (only sent on room create/reset)
+    if (!cachedPlayersPayload) {
+      cachedPlayersPayload = `data: ${JSON.stringify({ auction: state.auction, franchises, players: state.players })}\n\n`;
+    }
+    eventString = cachedPlayersPayload;
+  } else {
+    // Standard payload without players (auction + franchises only)
+    if (!cachedFullPayload) {
+      cachedFullPayload = `data: ${JSON.stringify({ auction: state.auction, franchises })}\n\n`;
+    }
+    eventString = cachedFullPayload;
   }
-  const eventString = `data: ${JSON.stringify(payload)}\n\n`;
+
   const activeClients: any[] = [];
-  
   for (let i = 0; i < sseClients.length; i++) {
     const client = sseClients[i];
     try {
@@ -278,6 +294,22 @@ function broadcastState(includePlayers = false) {
     } catch (e) {
       // socket dead
     }
+  }
+  sseClients = activeClients;
+}
+
+// Performance: minimal timer-only broadcast — sends just the updated timerSeconds
+// instead of the full state. Reduces per-second payload from ~150KB to ~30 bytes.
+function broadcastTimerOnly() {
+  const eventString = `data: ${JSON.stringify({ timerPatch: true, timerSeconds: state.auction.timerSeconds })}\n\n`;
+  const activeClients: any[] = [];
+  for (let i = 0; i < sseClients.length; i++) {
+    const client = sseClients[i];
+    try {
+      if (client.writableEnded || client.destroyed) continue;
+      client.write(eventString);
+      activeClients.push(client);
+    } catch (e) { /* socket dead */ }
   }
   sseClients = activeClients;
 }
@@ -294,6 +326,7 @@ function addLog(type: 'info' | 'bid' | 'sold' | 'unsold' | 'status' | 'join' | '
   if (state.auction.logs.length > 200) {
     state.auction.logs.pop();
   }
+  invalidateCache(); // Log changes invalidate cached broadcast payload
 }
 
 // Bid timer loop
@@ -304,7 +337,9 @@ function startTimerLoop() {
     if (state.auction.status === 'active') {
       if (state.auction.timerSeconds > 0) {
         state.auction.timerSeconds--;
-        broadcastState();
+        // Performance: send only the updated timer value, not the full state.
+        // This reduces the per-second broadcast payload from ~150KB to ~30 bytes.
+        broadcastTimerOnly();
       } else {
         // Countdown completed
         handleTimerExpiry();
@@ -373,12 +408,14 @@ function handleTimerExpiry() {
   state.auction.bidHistory = [];
 
   saveState();
+  invalidateCache();
   broadcastState();
 
   // Auto-clear the result message after 3 seconds
   setTimeout(() => {
     state.auction.lastResultMessage = null;
     state.auction.lastResultType = null;
+    invalidateCache();
     broadcastState();
   }, 3000);
 }
@@ -388,6 +425,7 @@ async function triggerAiCommentary(prompt: string) {
   if (commentary) {
     addLog('info', `[AI Auctioneer Commentary]: "${commentary}"`);
     saveState();
+    invalidateCache();
     broadcastState();
   }
 }
@@ -668,10 +706,12 @@ app.post('/api/auction/join', (req, res) => {
   }
 
   // Check room ownership limit for franchise owners
+  // Count users who have joined with the franchise_owner role (not those who have selected a franchise,
+  // since franchise selection happens in the lobby AFTER joining — these are two separate steps).
   if (role === 'franchise_owner') {
-    const claimedCount = Object.values(state.auction.activeUsers).filter(u => !!u.franchise).length;
-    if (claimedCount >= (state.auction.numTeams || 10)) {
-      return res.status(403).json({ error: `The room limit of ${state.auction.numTeams} active franchises has been reached.` });
+    const franchiseOwnerCount = Object.values(state.auction.activeUsers).filter(u => u.role === 'franchise_owner').length;
+    if (franchiseOwnerCount >= (state.auction.numTeams || 10)) {
+      return res.status(403).json({ error: `The room limit of ${state.auction.numTeams} active franchise owners has been reached.` });
     }
   }
 
@@ -977,7 +1017,7 @@ app.post('/api/auction/admin/action', async (req, res) => {
     state.auction.activePlayerId = null;
     state.auction.currentBidLakhs = 0;
     state.auction.highestBidder = null;
-    state.auction.timerSeconds = 30;
+    state.auction.timerSeconds = state.auction.timerDuration || 10; // Bug #6 fix: use configured timer, not hardcoded 30s
     state.auction.bidHistory = [];
 
     if (timerInterval) {

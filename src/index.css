@@ -48,11 +48,12 @@
   border-color: rgb(239, 68, 68) !important;
 }
 
-/* Mobile touch responsiveness and fast click handling */
+/* Mobile & Desktop GPU acceleration & performance optimizations */
 html, body {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: none;
+  text-rendering: optimizeSpeed;
 }
 
 button, a, input, select {
@@ -79,7 +80,7 @@ button, a, input, select {
   background: rgba(71, 85, 105, 0.8);
 }
 
-/* Premium UI Enhancements */
+/* Premium UI Enhancements - Hardware Accelerated */
 .ambient-glow {
   position: fixed;
   top: 0;
@@ -89,6 +90,7 @@ button, a, input, select {
   pointer-events: none;
   z-index: 0;
   overflow: hidden;
+  transform: translateZ(0);
 }
 
 .glow-orb-1 {
@@ -98,8 +100,10 @@ button, a, input, select {
   width: 50vw;
   height: 50vw;
   background: radial-gradient(circle, rgba(245, 158, 11, 0.05) 0%, transparent 70%);
-  filter: blur(80px);
+  filter: blur(40px);
   pointer-events: none;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .glow-orb-2 {
@@ -109,27 +113,51 @@ button, a, input, select {
   width: 50vw;
   height: 50vw;
   background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
-  filter: blur(80px);
+  filter: blur(40px);
   pointer-events: none;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .glass-panel {
-  background: rgba(15, 23, 42, 0.65);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: rgba(15, 23, 42, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .glass-panel-amber {
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(16px);
+  background: rgba(15, 23, 42, 0.85);
   border: 1px solid rgba(245, 158, 11, 0.15);
+}
+
+@supports (backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px)) {
+  .glass-panel {
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  .glass-panel-amber {
+    background: rgba(15, 23, 42, 0.7);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+}
+
+/* On mobile devices, disable blurs completely to maximize FPS and battery efficiency */
+@media (max-width: 768px) {
+  .glow-orb-1, .glow-orb-2 {
+    display: none;
+  }
+  .glass-panel, .glass-panel-amber {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
 }
 
 .premium-btn-amber {
   background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
   box-shadow: 0 4px 20px rgba(245, 158, 11, 0.2);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .premium-btn-amber:hover:not(:disabled) {
@@ -140,7 +168,7 @@ button, a, input, select {
 .premium-btn-indigo {
   background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
   box-shadow: 0 4px 20px rgba(99, 102, 241, 0.2);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .premium-btn-indigo:hover:not(:disabled) {

@@ -165,8 +165,18 @@ export default function App() {
     }
   }, []);
 
-  // Clear previous session indicators from local storage on mount (guarantees landing on Home on refresh)
+  // Bug #3 fix: On refresh, notify the server to remove the stale user session (ghost cleanup),
+  // THEN wipe localStorage. Previously we only wiped localStorage but the server kept the ghost user.
   useEffect(() => {
+    const staleUserId = localStorage.getItem('ipl_userId');
+    if (staleUserId) {
+      // Fire-and-forget: tell server to remove the stale session before we clear local state
+      fetch('/api/auction/leave', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: staleUserId })
+      }).catch(() => {}); // Ignore errors — server may already have cleaned up via SSE close
+    }
     localStorage.removeItem('ipl_userId');
     localStorage.removeItem('ipl_userRole');
   }, []);
@@ -232,6 +242,9 @@ export default function App() {
   }, [userId, userRole, auctionState.lobbyStatus]);
 
   // Connect to Real-time SSE Stream
+  // Bug #4 fix: Removed `isConnected` from the dependency array. Having it there caused the entire
+  // effect to tear down and restart every time the connection status toggled, creating a rapid
+  // reconnect loop. The onerror handler already manages retries via its own setTimeout.
   useEffect(() => {
     // Fetch once immediately
     fetchState();
@@ -248,10 +261,17 @@ export default function App() {
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          setAuctionState(data.auction);
-          setFranchises(data.franchises);
-          if (data.players) {
-            setPlayers(data.players);
+          if (data.timerPatch) {
+            setAuctionState(prev => ({
+              ...prev,
+              timerSeconds: data.timerSeconds
+            }));
+          } else {
+            setAuctionState(data.auction);
+            setFranchises(data.franchises);
+            if (data.players) {
+              setPlayers(data.players);
+            }
           }
           setIsConnected(true);
           setApiError(null);
@@ -268,7 +288,7 @@ export default function App() {
         // Clear any existing retry timeout to prevent duplicate connections
         if (retryTimeout) clearTimeout(retryTimeout);
 
-        // Retry connection in 3 seconds
+        // Retry connection in 3 seconds (self-contained retry — no effect re-run needed)
         retryTimeout = setTimeout(() => {
           connectSSE();
           fetchState();
@@ -278,19 +298,19 @@ export default function App() {
 
     connectSSE();
 
-    // Setup periodic polling backup ONLY if SSE connection breaks
+    // Setup periodic polling backup ONLY when SSE connection is lost
     const pollingInterval = setInterval(() => {
       if (!isConnected) {
         fetchState();
       }
-    }, 5000);
+    }, 15000);
 
     return () => {
       if (eventSource) eventSource.close();
       if (retryTimeout) clearTimeout(retryTimeout);
       clearInterval(pollingInterval);
     };
-  }, [userId, isConnected]);
+  }, [userId]);
 
   // Handle Joining Auction Room
   const handleJoin = async (role: string, name: string, roomCode: string, passcode?: string) => {
@@ -1123,11 +1143,15 @@ export default function App() {
     );
   };
 
-  const renderJoinRoomScreen = () => {
+  // Bug #5 fix: Moved preFilledRoomCode sync out of the render function into a proper useEffect.
+  // Calling setState inside a render function is an anti-pattern that causes extra renders and warnings.
+  useEffect(() => {
     if (preFilledRoomCode && !joinRoomCode) {
       setJoinRoomCode(preFilledRoomCode);
     }
+  }, [preFilledRoomCode]);
 
+  const renderJoinRoomScreen = () => {
     const handleSubmitJoin = (e: React.FormEvent) => {
       e.preventDefault();
       handleJoin(joinRole, joinPlayerName, joinRoomCode, joinPasscode);
@@ -1514,8 +1538,9 @@ export default function App() {
                 <span className="text-[10px] text-slate-500">Only 1 Owner per Franchise</span>
               </div>
 
+              {/* Bug #7 fix: Only show teams up to the configured numTeams for this room */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {teamKeys.map(team => {
+                {teamKeys.slice(0, maxTeamsCount).map(team => {
                   // Find owner
                   const owner = activeUsersList.find(u => u.franchise === team.name);
                   const isOwnedByMe = myFranchiseSelection === team.name;
@@ -1546,6 +1571,7 @@ export default function App() {
                         )}
                       </div>
 
+                      {/* Bug #1 fix: disabled check excludes current user from franchise count */}
                       {isUserFranchiseOwner && (
                         <div className="flex-shrink-0">
                           {owner ? (
@@ -1564,9 +1590,9 @@ export default function App() {
                           ) : (
                             <button
                               onClick={() => handleSelectFranchise(team.name)}
-                              disabled={!!myFranchiseSelection || (activeUsersList.filter(u => !!u.franchise).length >= maxTeamsCount)}
+                              disabled={!!myFranchiseSelection || (activeUsersList.filter(u => u.userId !== userId && !!u.franchise).length >= maxTeamsCount)}
                               className={`px-3 py-1 font-black text-[9px] uppercase rounded-lg tracking-wider transition-all cursor-pointer ${
-                                (myFranchiseSelection || (activeUsersList.filter(u => !!u.franchise).length >= maxTeamsCount))
+                                (!!myFranchiseSelection || (activeUsersList.filter(u => u.userId !== userId && !!u.franchise).length >= maxTeamsCount))
                                   ? 'bg-slate-900 border border-slate-850 text-slate-650 cursor-not-allowed font-bold'
                                   : 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:scale-102 active:scale-95'
                               }`}
