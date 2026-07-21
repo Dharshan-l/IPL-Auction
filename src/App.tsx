@@ -16,6 +16,7 @@ export default function App() {
   const [userId, setUserId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(() => localStorage.getItem('ipl_username'));
+  const [isSelectingTeam, setIsSelectingTeam] = useState(false);
 
   // Client-side SPA routing state
   const [currentScreen, setCurrentScreen] = useState<'home' | 'create_room' | 'join_room' | 'lobby' | 'auction'>('home');
@@ -346,12 +347,26 @@ export default function App() {
 
   // Handle Select Franchise
   const handleSelectFranchise = async (franchise: string | null) => {
-    if (!userId) return;
+    let currentUserId = userId || localStorage.getItem('ipl_userId');
+    const storedUsername = username || localStorage.getItem('ipl_username') || '';
+
+    if (!currentUserId && storedUsername) {
+      // Auto-rejoin if session was lost
+      await handleJoin('franchise_owner', storedUsername, auctionState.roomCode || '');
+      currentUserId = localStorage.getItem('ipl_userId');
+    }
+
+    if (!currentUserId) {
+      setApiError('Session not found. Please join the auction room first.');
+      return;
+    }
+
+    setIsSelectingTeam(true);
     try {
       const response = await fetch('/api/auction/select-team', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, franchise })
+        body: JSON.stringify({ userId: currentUserId, username: storedUsername, franchise })
       });
       const contentType = response.headers.get('content-type');
       const isJson = contentType && contentType.includes('application/json');
@@ -366,23 +381,44 @@ export default function App() {
         }
         setApiError(null);
       } else {
-        const errorMsg = isJson ? (await response.json()).error : 'Team selection failed';
-        setApiError(errorMsg || 'Team selection failed');
+        const errorData = isJson ? await response.json() : {};
+        const errorMsg = errorData.error || 'Team selection failed';
+        setApiError(errorMsg);
+
+        if (response.status === 404 && storedUsername) {
+          console.warn('Session missing on server, attempting auto-rejoin...');
+          await handleJoin('franchise_owner', storedUsername, auctionState.roomCode || '');
+        }
       }
     } catch (err) {
       console.error('Select Franchise Error:', err);
       setApiError('Network error selecting franchise');
+    } finally {
+      setIsSelectingTeam(false);
     }
   };
 
   // Handle AI Auto-Select Franchise Team
   const handleAutoSelectFranchise = async () => {
-    if (!userId) return;
+    let currentUserId = userId || localStorage.getItem('ipl_userId');
+    const storedUsername = username || localStorage.getItem('ipl_username') || '';
+
+    if (!currentUserId && storedUsername) {
+      await handleJoin('franchise_owner', storedUsername, auctionState.roomCode || '');
+      currentUserId = localStorage.getItem('ipl_userId');
+    }
+
+    if (!currentUserId) {
+      setApiError('Session not found. Please join the auction room first.');
+      return;
+    }
+
+    setIsSelectingTeam(true);
     try {
       const response = await fetch('/api/auction/auto-select-team', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId })
+        body: JSON.stringify({ userId: currentUserId, username: storedUsername })
       });
       const contentType = response.headers.get('content-type');
       const isJson = contentType && contentType.includes('application/json');
@@ -395,12 +431,20 @@ export default function App() {
         }
         setApiError(null);
       } else {
-        const errorMsg = isJson ? (await response.json()).error : 'Auto team selection failed';
-        setApiError(errorMsg || 'Auto team selection failed');
+        const errorData = isJson ? await response.json() : {};
+        const errorMsg = errorData.error || 'Auto team selection failed';
+        setApiError(errorMsg);
+
+        if (response.status === 404 && storedUsername) {
+          console.warn('Session missing on server, attempting auto-rejoin...');
+          await handleJoin('franchise_owner', storedUsername, auctionState.roomCode || '');
+        }
       }
     } catch (err) {
       console.error('Auto Select Franchise Error:', err);
       setApiError('Network error auto-selecting franchise');
+    } finally {
+      setIsSelectingTeam(false);
     }
   };
 
@@ -719,12 +763,15 @@ export default function App() {
     return userId ? auctionState.activeUsers[userId] : null;
   }, [userId, auctionState.activeUsers]);
 
-  // Derive effective franchise name (checking client role + server assigned franchise)
+  // Derive effective franchise name (checking server assigned franchise + client role)
   const effectiveFranchiseName = useMemo(() => {
+    if (myUser) {
+      return myUser.franchise || null;
+    }
     if (userRole && userRole !== 'franchise_owner' && userRole !== 'auctioneer' && userRole !== 'spectator') {
       return userRole;
     }
-    return myUser?.franchise || null;
+    return null;
   }, [userRole, myUser]);
 
   // Synchronize userRole with server assigned franchise when assigned
@@ -1590,13 +1637,14 @@ export default function App() {
             <div className="bg-slate-900/40 border border-slate-850 p-5 rounded-3xl space-y-4">
               <div className="flex items-center justify-between border-b border-slate-850/60 pb-2">
                 <h3 className="font-extrabold text-xs text-white uppercase tracking-wider">IPL Franchise Ownership</h3>
-                {myUser?.role === 'franchise_owner' && !myFranchiseSelection && (
+                {(userRole === 'franchise_owner' || myUser?.role === 'franchise_owner' || (!!userRole && userRole !== 'auctioneer' && userRole !== 'spectator')) && !myFranchiseSelection && (
                   <button
                     onClick={handleAutoSelectFranchise}
-                    className="px-2.5 py-1 bg-gradient-to-r from-amber-500/20 to-yellow-400/20 border border-yellow-500/40 text-yellow-400 hover:text-white font-bold text-[10px] uppercase rounded-lg transition-all cursor-pointer flex items-center space-x-1"
+                    disabled={isSelectingTeam}
+                    className="px-2.5 py-1 bg-gradient-to-r from-amber-500/20 to-yellow-400/20 border border-yellow-500/40 text-yellow-400 hover:text-white font-bold text-[10px] uppercase rounded-lg transition-all cursor-pointer flex items-center space-x-1 disabled:opacity-50"
                   >
-                    <Sparkles className="w-3 h-3 text-amber-400 animate-pulse" />
-                    <span>⚡ AI Auto-Select Team</span>
+                    <Sparkles className={`w-3 h-3 text-amber-400 ${isSelectingTeam ? 'animate-spin' : 'animate-pulse'}`} />
+                    <span>{isSelectingTeam ? 'Claiming...' : '⚡ AI Auto-Select Team'}</span>
                   </button>
                 )}
                 {!myFranchiseSelection && <span className="text-[10px] text-slate-500">Only 1 Owner per Franchise</span>}
@@ -1608,7 +1656,7 @@ export default function App() {
                   // Find owner
                   const owner = activeUsersList.find(u => u.franchise === team.name);
                   const isOwnedByMe = myFranchiseSelection === team.name;
-                  const isUserFranchiseOwner = myUser?.role === 'franchise_owner';
+                  const isUserFranchiseOwner = userRole === 'franchise_owner' || myUser?.role === 'franchise_owner' || (!!userRole && userRole !== 'auctioneer' && userRole !== 'spectator');
                   
                   return (
                     <div 
@@ -1642,7 +1690,8 @@ export default function App() {
                             isOwnedByMe ? (
                               <button
                                 onClick={() => handleSelectFranchise(null)}
-                                className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-550/20 text-red-400 font-black text-[9px] uppercase rounded-lg tracking-wider transition-colors cursor-pointer"
+                                disabled={isSelectingTeam}
+                                className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-550/20 text-red-400 font-black text-[9px] uppercase rounded-lg tracking-wider transition-colors cursor-pointer disabled:opacity-50"
                               >
                                 Release
                               </button>
@@ -1654,14 +1703,14 @@ export default function App() {
                           ) : (
                             <button
                               onClick={() => handleSelectFranchise(team.name)}
-                              disabled={!!myFranchiseSelection || (activeUsersList.filter(u => u.userId !== userId && !!u.franchise).length >= maxTeamsCount)}
+                              disabled={isSelectingTeam || (activeUsersList.filter(u => u.userId !== userId && !!u.franchise).length >= maxTeamsCount)}
                               className={`px-3 py-1 font-black text-[9px] uppercase rounded-lg tracking-wider transition-all cursor-pointer ${
-                                (!!myFranchiseSelection || (activeUsersList.filter(u => u.userId !== userId && !!u.franchise).length >= maxTeamsCount))
+                                (isSelectingTeam || (activeUsersList.filter(u => u.userId !== userId && !!u.franchise).length >= maxTeamsCount))
                                   ? 'bg-slate-900 border border-slate-850 text-slate-650 cursor-not-allowed font-bold'
                                   : 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:scale-102 active:scale-95'
                               }`}
                             >
-                              Claim
+                              {isSelectingTeam ? 'Claiming...' : 'Claim'}
                             </button>
                           )}
                         </div>
@@ -2354,7 +2403,7 @@ export default function App() {
                     {/* LIVE Bidding Actions (Team Owners) */}
                     {userRole !== 'auctioneer' && userRole !== 'spectator' && (
                       <div className="pt-2">
-                        {!myFranchise && (
+                        {(!myUser?.franchise || !myFranchise) && (
                           <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-2xl space-y-2 text-center mb-3">
                             <div className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center justify-center space-x-1.5">
                               <AlertTriangle className="w-4 h-4 text-amber-400" />
@@ -2371,19 +2420,21 @@ export default function App() {
                                   <button
                                     key={t.name}
                                     onClick={() => handleSelectFranchise(t.name)}
-                                    className="px-3 py-1.5 bg-slate-900 border hover:border-amber-500 text-slate-200 hover:text-white font-black text-xs rounded-lg transition-all cursor-pointer"
+                                    disabled={isSelectingTeam}
+                                    className="px-3 py-1.5 bg-slate-900 border hover:border-amber-500 text-slate-200 hover:text-white font-black text-xs rounded-lg transition-all cursor-pointer disabled:opacity-50"
                                     style={{ borderColor: t.color }}
                                   >
-                                    Claim {t.name}
+                                    {isSelectingTeam ? 'Claiming...' : `Claim ${t.name}`}
                                   </button>
                                 );
                               })}
                               <button
                                 onClick={handleAutoSelectFranchise}
-                                className="px-3 py-1.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-xs uppercase rounded-lg transition-all shadow cursor-pointer flex items-center space-x-1"
+                                disabled={isSelectingTeam}
+                                className="px-3 py-1.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-xs uppercase rounded-lg transition-all shadow cursor-pointer flex items-center space-x-1 disabled:opacity-50"
                               >
-                                <Sparkles className="w-3.5 h-3.5" />
-                                <span>⚡ AI Auto-Select</span>
+                                <Sparkles className={`w-3.5 h-3.5 ${isSelectingTeam ? 'animate-spin' : ''}`} />
+                                <span>{isSelectingTeam ? 'Claiming...' : '⚡ AI Auto-Select'}</span>
                               </button>
                             </div>
                           </div>

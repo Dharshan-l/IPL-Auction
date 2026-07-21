@@ -745,14 +745,29 @@ app.post('/api/auction/join', (req, res) => {
 
 // API: AI Auto-Select Team for Franchise Owner
 app.post('/api/auction/auto-select-team', (req, res) => {
-  const { userId } = req.body;
+  const { userId, username } = req.body;
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required' });
   }
 
-  const user = state.auction.activeUsers[userId];
+  let user = state.auction.activeUsers[userId];
   if (!user) {
-    return res.status(404).json({ error: 'User session not found' });
+    // If username is provided, attempt auto session recovery
+    if (username && username.trim()) {
+      const trimmedUsername = username.trim();
+      state.auction.activeUsers[userId] = {
+        userId,
+        username: trimmedUsername,
+        role: 'franchise_owner',
+        franchise: null,
+        isReady: false,
+        lastSeen: new Date().toISOString()
+      };
+      user = state.auction.activeUsers[userId];
+      addLog('join', `${trimmedUsername} re-joined session as Franchise Owner.`);
+    } else {
+      return res.status(404).json({ error: 'User session not found' });
+    }
   }
 
   const maxTeams = state.auction.numTeams || 10;
@@ -785,14 +800,29 @@ app.post('/api/auction/auto-select-team', (req, res) => {
 
 // API: Team Selection Locking in Lobby
 app.post('/api/auction/select-team', (req, res) => {
-  const { userId, franchise } = req.body;
+  const { userId, username, franchise } = req.body;
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required' });
   }
 
-  const user = state.auction.activeUsers[userId];
+  let user = state.auction.activeUsers[userId];
   if (!user) {
-    return res.status(404).json({ error: 'User session not found' });
+    // If username is provided, attempt auto session recovery
+    if (username && username.trim()) {
+      const trimmedUsername = username.trim();
+      state.auction.activeUsers[userId] = {
+        userId,
+        username: trimmedUsername,
+        role: 'franchise_owner',
+        franchise: null,
+        isReady: false,
+        lastSeen: new Date().toISOString()
+      };
+      user = state.auction.activeUsers[userId];
+      addLog('join', `${trimmedUsername} re-joined session as Franchise Owner.`);
+    } else {
+      return res.status(404).json({ error: 'User session not found' });
+    }
   }
 
   if (franchise) {
@@ -815,7 +845,7 @@ app.post('/api/auction/select-team', (req, res) => {
     const prevFranchise = user.franchise;
     user.franchise = franchise;
     addLog('status', `${user.username} selected ${franchise} as their IPL team.`);
-    if (prevFranchise) {
+    if (prevFranchise && prevFranchise !== franchise) {
       addLog('status', `Team ${prevFranchise} released by ${user.username}.`);
     }
   } else {
@@ -828,6 +858,7 @@ app.post('/api/auction/select-team', (req, res) => {
   }
 
   saveState();
+  invalidateCache();
   broadcastState();
   res.json({ success: true, activeUsers: state.auction.activeUsers });
 });
