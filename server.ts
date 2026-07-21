@@ -613,7 +613,8 @@ app.get('/api/auction/stream', (req, res) => {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*'
+    'Access-Control-Allow-Origin': '*',
+    'X-Accel-Buffering': 'no'
   });
   res.write('\n');
 
@@ -643,38 +644,8 @@ app.get('/api/auction/stream', (req, res) => {
   req.on('close', () => {
     clearInterval(heartbeat);
     sseClients = sseClients.filter(c => c.res !== res);
-
-    if (userId) {
-      const user = state.auction.activeUsers[userId];
-      if (user) {
-        const username = user.username;
-        const role = user.role;
-        const prevFranchise = user.franchise;
-
-        // Remove user from activeUsers
-        delete state.auction.activeUsers[userId];
-        addLog('leave', `${username || 'Someone'} (${role === 'franchise_owner' ? 'Franchise Owner' : role}) disconnected.`);
-
-        // Release their team and log if they were a franchise owner
-        if (prevFranchise) {
-          addLog('status', `Team ${prevFranchise} is now available again as ${username} disconnected.`);
-        }
-
-        // If Auctioneer disconnected, pause active bidding
-        if (role === 'auctioneer') {
-          if (state.auction.status === 'active') {
-            state.auction.status = 'paused';
-            if (timerInterval) {
-              clearInterval(timerInterval);
-              timerInterval = null;
-            }
-            addLog('status', 'Bidding paused automatically because the Auctioneer disconnected.');
-          }
-        }
-
-        saveState();
-        broadcastState();
-      }
+    if (userId && state.auction.activeUsers[userId]) {
+      state.auction.activeUsers[userId].lastSeen = new Date().toISOString();
     }
   });
 });

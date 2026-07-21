@@ -451,6 +451,15 @@ export default function App() {
   // Handle Toggle Ready Status
   const handleToggleReady = async (isReady: boolean) => {
     if (!userId) return;
+    // Optimistic UI update for 0ms latency
+    setAuctionState(prev => ({
+      ...prev,
+      activeUsers: {
+        ...prev.activeUsers,
+        [userId]: prev.activeUsers[userId] ? { ...prev.activeUsers[userId], isReady } : prev.activeUsers[userId]
+      }
+    }));
+
     try {
       const response = await fetch('/api/auction/ready', {
         method: 'POST',
@@ -492,19 +501,27 @@ export default function App() {
   };
 
   // Submit Bid (Franchise Owners) with 0ms Optimistic UI Response
-  const handlePlaceBid = async (customAmount?: number) => {
+  const handlePlaceBid = async (customBidLakhs?: number) => {
     const activeFranchise = effectiveFranchiseName;
     if (!activeFranchise || userRole === 'auctioneer' || userRole === 'spectator') return;
 
-    // Calculate bid amount
-    const targetBid = customAmount || nextMinBidLakhs;
+    const targetBid = customBidLakhs !== undefined ? customBidLakhs : nextMinBidLakhs;
+    if (targetBid <= auctionState.currentBidLakhs) return;
 
-    // 0ms Optimistic local update for instantaneous visual feedback
+    // 0ms Optimistic local update
     setAuctionState(prev => ({
       ...prev,
       currentBidLakhs: targetBid,
       highestBidder: activeFranchise,
-      timerSeconds: prev.timerDuration || 10
+      bidHistory: [
+        {
+          id: 'opt-' + Date.now(),
+          franchiseName: activeFranchise,
+          bidAmountLakhs: targetBid,
+          timestamp: new Date().toISOString()
+        },
+        ...prev.bidHistory
+      ]
     }));
 
     try {
@@ -552,6 +569,24 @@ export default function App() {
   // Admin Commands (Auctioneer)
   const handleAdminAction = async (action: string, playerId?: string) => {
     if (userRole !== 'auctioneer') return;
+
+    // Optimistic UI updates for 0ms admin dashboard response
+    if (action === 'start' && playerId) {
+      setAuctionState(prev => ({
+        ...prev,
+        status: 'active',
+        activePlayerId: playerId,
+        currentBidLakhs: 0,
+        highestBidder: null,
+        timerSeconds: prev.timerDuration || 10
+      }));
+    } else if (action === 'pause') {
+      setAuctionState(prev => ({ ...prev, status: 'paused' }));
+    } else if (action === 'resume') {
+      setAuctionState(prev => ({ ...prev, status: 'active' }));
+    } else if (action === 'mark_sold' || action === 'mark_unsold') {
+      setAuctionState(prev => ({ ...prev, status: 'idle', activePlayerId: null }));
+    }
 
     try {
       const response = await fetch('/api/auction/admin/action', {
